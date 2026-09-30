@@ -1463,6 +1463,11 @@ const Domain = (() => {
       return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
+    static isDellServiceTagNorm(norm) {
+      const n = this.normalize(norm);
+      return /^[A-HJ-NP-Z0-9]{7}$/.test(n) && /[0-9]/.test(n) && /[A-Z]/.test(n);
+    }
+
     static isPlausibleSerialToken(raw) {
       const s = String(raw || '').trim();
       if (!s || s.length < 5) return false;
@@ -1470,6 +1475,9 @@ const Domain = (() => {
       if (weird > 1) return false;
       if (/\s{2,}/.test(s)) return false;
       const n = this.normalize(s);
+      if (this.isDellServiceTagNorm(n)) return true;
+      if (n.length > 11 && /^\d+$/.test(n)) return false;
+      if (/^MFGYR/i.test(n) || /^EX\d{5,}$/i.test(s.replace(/\s/g, ''))) return false;
       if (n.length < 5 || n.length > 20) return false;
       if (!/[0-9]/.test(n) || !/[A-Z]/.test(n)) return false;
       const lower = (s.match(/[a-z]/g) || []).length;
@@ -1484,25 +1492,80 @@ const Domain = (() => {
       let s = String(raw || '').split(/[\r\n]+/)[0];
       s = s.replace(/[\x00-\x1F\x7F]/g, '').trim();
       s = s.replace(/^\][A-Za-z0-9]{2}/, '');
+      const stInline = s.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+      if (stInline) return stInline[1].toUpperCase();
       s = s.replace(/^(SN|S\/N|SERIAL\s*#?|SERVICE\s*TAG|ST|P\/N|PN)\s*[:\s#]*/i, '').trim();
       if (/[|;]/.test(s)) {
         const parts = s.split(/[|;]/).map(p => p.trim()).filter(Boolean);
-        parts.sort((a, b) => this.normalize(b).length - this.normalize(a).length);
+        for (const p of parts) {
+          const st = p.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+          if (st) return st[1].toUpperCase();
+        }
+        parts.sort((a, b) => {
+          const na = this.normalize(a);
+          const nb = this.normalize(b);
+          if (this.isDellServiceTagNorm(na)) return -1;
+          if (this.isDellServiceTagNorm(nb)) return 1;
+          return nb.length - na.length;
+        });
         s = parts[0] || s;
       }
+      const n = this.normalize(s);
+      if (this.isDellServiceTagNorm(n)) return n;
+      if (/^MFGYR/i.test(n) || (n.length > 11 && /^\d+$/.test(n))) return '';
       return s.trim();
     }
 
-    static isLikelyBarcodeRead(text, orderItems) {
-      const line = this.sanitizePistolLine(text);
-      if (!line) return false;
-      if (this.isPlausibleSerialToken(line)) return true;
-      const norm = this.normalize(line);
-      if (norm.length < 5 || norm.length > 24) return false;
-      return (orderItems || []).some(i => {
-        const sn = i.serial.normalized;
-        return sn === norm || norm.includes(sn) || sn.includes(norm);
+    /** Pistola / Data Matrix Dell: ST, varias líneas (MFGYR / ST / EX) en un solo disparo */
+    static extractAllScanTokens(raw) {
+      const priority = [];
+      const out = new Set();
+      const full = String(raw || '').replace(/[\x00-\x1F\x7F]/g, ' ');
+      const push = (t, pri = false) => {
+        const x = String(t || '').trim();
+        if (!x) return;
+        const n = this.normalize(x);
+        if (n.length > 11 && /^\d+$/.test(n)) return;
+        if (/^MFGYR/i.test(n)) return;
+        if (this.isDellServiceTagNorm(n)) {
+          if (pri) priority.push(n);
+          else out.add(n);
+          return;
+        }
+        if (n.length >= 5 && n.length <= 20) out.add(x);
+      };
+
+      for (const m of full.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+        push(m[1].toUpperCase(), true);
+      }
+      full.split(/[\r\n]+/).forEach(line => {
+        const st = line.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+        if (st) push(st[1].toUpperCase(), true);
+        else push(this.sanitizePistolLine(line));
       });
+      this.extractFromOcr(full).forEach(t => push(t, this.isDellServiceTagNorm(t)));
+      for (const m of full.matchAll(/\b([A-HJ-NP-Z0-9]{7})\b/gi)) {
+        push(m[1].toUpperCase(), this.isDellServiceTagNorm(m[1]));
+      }
+
+      const merged = [...new Set([...priority, ...out])];
+      if (merged.length) return merged;
+      const fallback = this.sanitizePistolLine(raw);
+      return fallback ? [fallback] : [];
+    }
+
+    static isLikelyBarcodeRead(text, orderItems) {
+      const tokens = this.extractAllScanTokens(text);
+      for (const line of tokens) {
+        if (this.isPlausibleSerialToken(line) || this.isDellServiceTagNorm(line)) return true;
+        const norm = this.normalize(line);
+        if (norm.length < 5 || norm.length > 24) continue;
+        if ((orderItems || []).some(i => {
+          const sn = i.serial.normalized;
+          return sn === norm || norm.includes(sn) || sn.includes(norm);
+        })) return true;
+      }
+      return false;
     }
 
     /** Candidatos según origen: pistola = una línea; cámara = solo lecturas creíbles */
@@ -1512,8 +1575,10 @@ const Domain = (() => {
       if (photo) return this.expandCandidates(src);
 
       if (via === 'pistol_scan' || via === 'manual_entry') {
-        const line = this.sanitizePistolLine(src[0] || '');
-        return line ? this.expandCandidates([line]) : [];
+        const merged = [];
+        for (const chunk of src) merged.push(...this.extractAllScanTokens(chunk));
+        const uniq = [...new Set(merged)];
+        return uniq.length ? this.expandCandidates(uniq) : [];
       }
 
       if (via === 'live_barcode' || via === 'live_qr') {
@@ -1568,6 +1633,9 @@ const Domain = (() => {
             out.add(this.fixLenovoPfTypo(this.normalize(chunk)));
           }
         }
+        for (const m of raw.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+          out.add(m[1].toUpperCase());
+        }
       }
       return Array.from(out);
     }
@@ -1575,6 +1643,12 @@ const Domain = (() => {
     static extractFromOcr(ocr) {
       const out = new Set();
       const s = String(ocr || '');
+      for (const m of s.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+        out.add(m[1].toUpperCase());
+      }
+      for (const m of s.matchAll(/\bMFGYR\s*[:\s#]*\d{4}[\s\S]{0,40}?\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})/gi)) {
+        out.add(m[1].toUpperCase());
+      }
       for (const m of s.matchAll(/P\s*[F]\s*[-]?\s*([A-Z0-9]{5,12})/gi)) {
         const core = m[1].replace(/[^A-Z0-9]/gi, '').toUpperCase();
         if (core.length >= 5) {
@@ -1692,7 +1766,7 @@ const Domain = (() => {
       const expanded = this.expandCandidates(candidateTexts);
       for (const text of expanded) {
         const normText = this.fixLenovoPfTypo(this.normalize(text));
-        if (normText.length < 5) continue;
+        if (normText.length < 5 && !this.isDellServiceTagNorm(normText)) continue;
         const exact = orderItems.find(i => i.serial.normalized === normText);
         if (exact) return { matchType: 'EXACT', item: exact, confidence: 1.0 };
         const core = this.pfCore(normText);
@@ -1710,7 +1784,7 @@ const Domain = (() => {
       for (const text of expanded) {
         const normText = this.fixLenovoPfTypo(this.normalize(text));
         if (normText.length < 4) continue;
-        if (!this.isPlausibleSerialToken(text)) continue;
+        if (!this.isPlausibleSerialToken(text) && !this.isDellServiceTagNorm(normText)) continue;
 
         const exact = orderItems.find(i => i.serial.normalized === normText);
         if (exact) return { matchType: 'EXACT', item: exact, confidence: 1.0 };
@@ -4454,9 +4528,10 @@ const UI = {
     const handlePistol = async () => {
       if (UI.pistolSubmitLock) return;
       const input = document.getElementById('inputManualSerial');
-      const val = Domain.SerialMatcher.sanitizePistolLine(input.value);
+      const raw = input.value;
       input.value = '';
-      if (!val) return;
+      const tokens = Domain.SerialMatcher.extractAllScanTokens(raw);
+      if (!tokens.length) return;
       if (!AppState.items.length) {
         UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
         UI.focusPistolInput();
@@ -4464,7 +4539,7 @@ const UI = {
       }
       UI.pistolSubmitLock = true;
       try {
-        await UI.processValidationTexts([val], 'pistol_scan');
+        await UI.processValidationTexts(tokens, 'pistol_scan');
       } finally {
         UI.pistolSubmitLock = false;
         UI.focusPistolInput();
@@ -4804,6 +4879,7 @@ const UI = {
     const filtered = arr.filter(t => {
       const n = Domain.SerialMatcher.normalize(t);
       return Domain.SerialMatcher.isPlausibleSerialToken(t)
+        || Domain.SerialMatcher.isDellServiceTagNorm(n)
         || barcodeTexts.includes(t)
         || /^PF[A-Z0-9]{5,12}$/.test(n)
         || /^[A-HJ-NP-Z0-9]{6,9}$/.test(n);
@@ -4881,12 +4957,18 @@ const UI = {
     }
     const match = Domain.SerialMatcher.match(expanded, AppState.items);
     if (!match) {
-      const readLine = Domain.SerialMatcher.sanitizePistolLine((texts || [])[0] || '');
-      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: readLine || expanded.join(' | ') });
-      const manual = Domain.SerialMatcher.normalize(readLine || (texts || [])[0] || '');
-      const fuzzyOnly = manual.length >= 5
-        ? Domain.SerialMatcher.fuzzyMatch(manual, AppState.items)
-        : null;
+      const scanTokens = via === 'pistol_scan' || via === 'manual_entry'
+        ? Domain.SerialMatcher.extractAllScanTokens((texts || []).join('\n'))
+        : (texts || []);
+      const readLine = scanTokens[0] || Domain.SerialMatcher.sanitizePistolLine((texts || [])[0] || '');
+      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: scanTokens.join(' | ') || expanded.join(' | ') });
+      let fuzzyOnly = null;
+      for (const tok of [...scanTokens, ...expanded]) {
+        const manual = Domain.SerialMatcher.normalize(tok);
+        if (manual.length < 5 && !Domain.SerialMatcher.isDellServiceTagNorm(manual)) continue;
+        fuzzyOnly = Domain.SerialMatcher.fuzzyMatch(manual, AppState.items);
+        if (fuzzyOnly) break;
+      }
       if (fuzzyOnly) {
         UI.displayScanResult(
           'warning',
@@ -4900,16 +4982,21 @@ const UI = {
         });
         return;
       }
-      const hint = /20W0|008RUS|Type/i.test(expanded.join(' '))
+      const hint = /MFGYR|\bST\b|\bEX\b/i.test(scanTokens.join(' ') + expanded.join(' '))
+        ? ' Dell: dispare la línea ST:xxxxxxx o el Data Matrix; ignore MFGYR y EX (código largo).'
+        : /20W0|008RUS|Type/i.test(expanded.join(' '))
         ? ' En Dell use Service Tag (7 caracteres), no el Type Number.'
         : /PF|3AG|Lenovo/i.test(expanded.join(' ') + readLine)
           ? ' Lenovo: enfoque Serial Number PF-… en el marco amarillo o pruebe 3AG4Y9 manual.'
           : via === 'pistol_scan'
             ? ' Verifique que la pistola apunte al código Code128 / Data Matrix de la serie.'
             : ' Revise ortografía (ej. PF3AG4Y9). Cámara OCR con buena luz, sin reflejo.';
-      const show = readLine
-        ? [readLine]
-        : expanded.filter(t => Domain.SerialMatcher.isPlausibleSerialToken(t)).slice(0, 2);
+      const show = scanTokens.length
+        ? scanTokens.slice(0, 2)
+        : expanded.filter(t =>
+          Domain.SerialMatcher.isPlausibleSerialToken(t)
+          || Domain.SerialMatcher.isDellServiceTagNorm(t)
+        ).slice(0, 2);
       UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${show.join(', ') || 'sin lectura clara'}) — NO RECOLECTAR.${hint}`);
       if (via === 'pistol_scan') UI.vibrateDevice();
       return;
