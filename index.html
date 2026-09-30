@@ -913,6 +913,7 @@ canvas.signature-pad {
       </div>
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
         <button type="button" class="btn btn-primary" id="btnOrderCreateXsiTc">🏷 Crear Orden de Servicios XSI International (TC)</button>
+        <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:6px;">Al crear el TC se limpia el lab (recepciones anteriores + Supabase) y queda una sola orden nueva en cero.</span>
         <span class="badge badge-success" id="orderCreateTcBadge" style="display:none;"></span>
         <button type="button" class="btn btn-secondary" id="btnOrderCreateSendEmail">📧 Enviar correo</button>
         <button type="button" class="btn btn-secondary" id="btnOrderCreateCopy">📋 Copiar texto</button>
@@ -3182,6 +3183,30 @@ const OrderStore = {
 
   async deleteAllOrdersFromCloud() {
     return this.deleteOrdersByIds(this.orders.map(o => o.id));
+  },
+
+  /** Borra recepciones previas (local + Supabase) antes de una nueva notificación ITAD */
+  async resetLabForNewServiceOrder() {
+    if (this.orders.length) {
+      const hub = getItadSupabaseHub();
+      if (hub.isConnected()) await this.deleteAllOrdersFromCloud();
+      else {
+        this.orders = [];
+        this.activeOrderId = null;
+        this.applyToAppState(null);
+        this.saveAll({ skipCloud: true });
+      }
+    } else {
+      this.activeOrderId = null;
+      this.applyToAppState(null);
+      this.saveAll({ skipCloud: true });
+    }
+    AppState.rejectionAttempts = [];
+    resetWorkflowState();
+    const scanArea = document.getElementById('scanResultArea');
+    if (scanArea) scanArea.innerHTML = '';
+    const notes = document.getElementById('receptionNotes');
+    if (notes) notes.value = '';
   },
 
   listOpen() {
@@ -5998,42 +6023,70 @@ const UI = {
       return;
     }
 
-    OrderStore.persistActive();
-    const meta = orderCreationToOrderMetadata(form);
-    OrderStore.createOrder({
-      orderMetadata: meta,
-      items: [],
-      label: form.projectOrder || form.poReference || 'ITAD'
-    });
+    const priorCount = OrderStore.orders.length;
+    const runCreate = async () => {
+      await OrderStore.resetLabForNewServiceOrder();
 
-    const tcId = ensureServiceOrderId();
-    persistActiveOrder();
-    downloadXsiServiceOrderPdf({
-      tcId,
-      meta: AppState.orderMetadata,
-      items: [],
-      equipmentLines: form.equipmentLines
-    });
+      const meta = orderCreationToOrderMetadata(form);
+      const tcId = reserveServiceOrderId(meta.countryCode || 'GT');
+      meta.serviceOrderId = tcId;
 
-    const badge = document.getElementById('orderCreateTcBadge');
-    badge.style.display = 'inline-flex';
-    badge.textContent = tcId;
-
-    UI.updateServiceOrderBadge();
-    UI.renderWorkflowChrome();
-    UI.updateOpenOrdersBadge();
-    UI.renderReceptionOrderSelector();
-
-    const memoText = (document.getElementById('orderCreateImportText')?.value || '').trim();
-    if (getItadSupabaseHub().isConnected()) {
-      getItadSupabaseHub().upsertOrderIntake({ tcId, form, memoText }).then(syncRes => {
-        if (!syncRes.ok) {
-          UIFeedback.toast(`TC local OK; Supabase: ${syncRes.error}`, 'warning');
-        }
+      OrderStore.createOrder({
+        orderMetadata: meta,
+        items: [],
+        label: form.projectOrder || form.poReference || 'ITAD'
       });
-    }
+      AppState.orderMetadata.serviceOrderId = tcId;
+      persistActiveOrder();
 
-    UIFeedback.toast(`Orden XSI creada: ${tcId} — aparece en Órdenes abiertas`, 'success');
+      downloadXsiServiceOrderPdf({
+        tcId,
+        meta: AppState.orderMetadata,
+        items: [],
+        equipmentLines: form.equipmentLines
+      });
+
+      const badge = document.getElementById('orderCreateTcBadge');
+      badge.style.display = 'inline-flex';
+      badge.textContent = tcId;
+
+      UI.updateServiceOrderBadge();
+      UI.renderWorkflowChrome();
+      UI.updateOpenOrdersBadge();
+      UI.renderOpenOrdersList();
+      UI.renderReceptionOrderSelector();
+      UI.renderReceptionTable();
+      UI.renderWipingTable();
+
+      const memoText = (document.getElementById('orderCreateImportText')?.value || '').trim();
+      const hub = getItadSupabaseHub();
+      if (hub.isConnected()) {
+        flushOrderToCloudById(OrderStore.activeOrderId).then(syncRes => {
+          if (!syncRes.ok) {
+            UIFeedback.toast(`TC local OK; sync orden: ${syncRes.error}`, 'warning');
+          }
+        });
+        hub.upsertOrderIntake({ tcId, form, memoText }).then(syncRes => {
+          if (!syncRes.ok) {
+            UIFeedback.toast(`TC local OK; memo Supabase: ${syncRes.error}`, 'warning');
+          }
+        });
+      }
+
+      const wiped = priorCount ? ` · ${priorCount} recepción(es) anterior(es) borrada(s)` : '';
+      UIFeedback.toast(`Nuevo TC ${tcId} — lab en cero${wiped}. Cargue Excel en Recepción.`, 'success');
+    };
+
+    if (priorCount > 0) {
+      UIFeedback.modal({
+        title: 'Nueva orden ITAD Service',
+        message:
+          `Hay ${priorCount} recepción(es) guardada(s).\n\nAl crear el TC se borra TODO (inventario, escaneos, órdenes en Supabase) y se empieza desde cero.\n\n¿Continuar?`,
+        onConfirm: () => { runCreate(); }
+      });
+      return;
+    }
+    runCreate();
   },
 
   updateOrderCreateTcBadge() {
