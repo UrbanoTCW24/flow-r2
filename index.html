@@ -1820,6 +1820,19 @@ const Domain = (() => {
       };
     }
 
+    static matchWithOrderFuzzy(candidates, orderItems) {
+      const direct = this.match(candidates, orderItems);
+      if (direct) return direct;
+      const expanded = this.expandCandidates(candidates);
+      for (const text of expanded) {
+        const normText = this.fixLenovoPfTypo(this.normalize(text));
+        if (normText.length < 5) continue;
+        const fuzzy = this.fuzzyMatch(normText, orderItems);
+        if (fuzzy) return fuzzy;
+      }
+      return null;
+    }
+
     static match(candidateTexts, orderItems) {
       const expanded = this.expandCandidates(candidateTexts);
       for (const text of expanded) {
@@ -1942,7 +1955,7 @@ class ClientImageCompressorAdapter {
   }
 
   /** Etiquetas Lenovo (texto claro sobre fondo negro): invertir + contraste para Tesseract */
-  static async buildOcrVariantBlobs(sourceBlob) {
+  static async buildOcrVariantBlobs(sourceBlob, options = {}) {
     let bitmap = null;
     try {
       bitmap = await createImageBitmap(sourceBlob);
@@ -1978,9 +1991,11 @@ class ClientImageCompressorAdapter {
         return canvas;
       };
 
-      const variants = darkLabel
+      const maxV = Math.max(1, Math.min(3, options?.maxVariants ?? 3));
+      const allVariants = darkLabel
         ? [render(true, 1.45), render(true, 1.2), render(false, 1.25)]
         : [render(false, 1.25), render(true, 1.35)];
+      const variants = allVariants.slice(0, maxV);
       const blobs = [];
       for (const c of variants) {
         blobs.push(await ClientImageCompressorAdapter.canvasToJpegBlob(c, 0.88));
@@ -2341,6 +2356,8 @@ class ItadSupabaseHub {
 
   async deleteLabOrderFromCloud(labOrderId) {
     if (!this.client || !labOrderId) return { ok: false };
+    await this.client.from(ITAD_PRESENCE_TABLE).delete().eq('lab_order_id', labOrderId);
+    await this.client.from(ITAD_TEST_RUNS_TABLE).delete().eq('lab_order_id', labOrderId);
     const { error } = await this.client.from(ITAD_LAB_ORDERS_TABLE).delete().eq('lab_order_id', labOrderId);
     return { ok: !error, error: error?.message };
   }
@@ -2872,13 +2889,16 @@ const OrderStore = {
 
   /** Fusiona órdenes de Supabase (metadata + ítems combinados) */
   mergeCloudRows(rows) {
-    const map = new Map(this.orders.map(o => [o.id, o]));
+    const hub = getItadSupabaseHub();
+    const cloudIds = new Set((rows || []).map(r => r.lab_order_id));
+    const localById = new Map(this.orders.map(o => [o.id, o]));
+    const map = new Map();
     let incoming = 0;
     for (const row of rows || []) {
-      const cloudOrder = getItadSupabaseHub().cloudRowToLocalOrder(row);
-      const local = map.get(cloudOrder.id);
+      const cloudOrder = hub.cloudRowToLocalOrder(row);
+      const local = localById.get(cloudOrder.id);
       if (!local) {
-        map.set(cloudOrder.id, cloudOrder);
+        map.set(cloudOrder.id, { ...cloudOrder, cloudSynced: true });
         incoming += 1;
         continue;
       }
@@ -2890,8 +2910,13 @@ const OrderStore = {
         ...base,
         orderMetadata: { ...cloudOrder.orderMetadata, ...local.orderMetadata },
         items: mergedItems,
-        updatedAt: new Date(Math.max(tCloud, tLocal)).toISOString()
+        updatedAt: new Date(Math.max(tCloud, tLocal)).toISOString(),
+        cloudSynced: true
       });
+    }
+    for (const [id, local] of localById) {
+      if (cloudIds.has(id)) continue;
+      if (local.cloudSynced === false) map.set(id, local);
     }
     this.orders = Array.from(map.values()).sort(
       (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')
@@ -2966,7 +2991,8 @@ const OrderStore = {
         activeModule: 'tab-reception',
         orderClosed: false
       },
-      rejectionAttempts: []
+      rejectionAttempts: [],
+      cloudSynced: false
     };
     this.orders.unshift(order);
     this.activeOrderId = id;
@@ -3119,9 +3145,16 @@ function scheduleSupabaseLabSync() {
 }
 
 async function flushOrdersToCloud() {
+  if (typeof UI !== 'undefined' && UI.labelOcrBusy) return;
   const hub = getItadSupabaseHub();
   if (!hub.isConnected()) return;
   const res = await hub.syncAllLabOrders(OrderStore.orders);
+  if (res.ok) {
+    for (const o of OrderStore.orders) {
+      o.cloudSynced = true;
+    }
+    OrderStore.saveAll({ skipCloud: true });
+  }
   if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
     if (res.ok) {
       UI.setCloudSyncHint(`↑ ${res.synced} ord · ${res.assets || 0} eq`);
@@ -3141,7 +3174,12 @@ async function flushOrderToCloudById(orderId) {
   if (!hub.isConnected() || !orderId) return { ok: false, error: 'Sin conexión' };
   const order = OrderStore.orders.find(o => o.id === orderId);
   if (!order) return { ok: false, error: 'Orden no encontrada' };
-  return await hub.upsertLabOrder(order);
+  const res = await hub.upsertLabOrder(order);
+  if (res.ok) {
+    order.cloudSynced = true;
+    OrderStore.saveAll({ skipCloud: true });
+  }
+  return res;
 }
 
 function startCloudMultiUserSync() {
@@ -4130,7 +4168,7 @@ const UI = {
       }
       const statusEl = document.getElementById('orderCreateOcrStatus');
       statusEl.style.display = 'block';
-      statusEl.textContent = 'Leyendo imagen (OCR)… puede tardar 15–30 s';
+      statusEl.textContent = 'Leyendo imagen (OCR)… ~20–45 s en teléfono';
       UIFeedback.toast('Procesando foto del correo…', 'info');
       try {
         const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.85);
@@ -4582,7 +4620,7 @@ const UI = {
         return;
       }
       UI.labelOcrBusy = true;
-      UI.showScanProcessing('⏳ Analizando foto de galería… (15–30 s)');
+      UI.showScanProcessing('⏳ Analizando foto… ~20–45 s en teléfono. No dispare otra aún.');
       try {
         const { texts, source } = await UI.decodeLabelPhotoWithFallback(file, null);
         if (!texts.length) {
@@ -4880,7 +4918,7 @@ const UI = {
 
   async captureOcrLabelFromViewport() {
     if (UI.labelOcrBusy) {
-      UIFeedback.toast('Espere: aún se procesa la foto anterior (15–30 s)', 'warning');
+      UIFeedback.toast('Espere: aún se procesa la foto anterior', 'warning');
       return;
     }
     if (UI.liveScanHandled) return;
@@ -4893,11 +4931,11 @@ const UI = {
     }
     UI.liveScanHandled = true;
     UI.labelOcrBusy = true;
-    UI.setLiveScanStatus('⏳ Analizando foto… no cierre (15–30 s)');
+    UI.setLiveScanStatus('⏳ Analizando foto… no cierre (~20–45 s)');
     const cropFile = cropCanvas ? await UI.canvasToJpegFile(cropCanvas, 'label-crop.jpg') : null;
     const fullFile = fullCanvas ? await UI.canvasToJpegFile(fullCanvas, 'label-full.jpg') : null;
     UI.stopLiveScanner({ keepModalOpen: true });
-    UI.showScanProcessing('⏳ Analizando foto de etiqueta… espere el resultado aquí (15–30 s). No dispare otra foto aún.');
+    UI.showScanProcessing('⏳ Analizando foto… espere aquí (~20–45 s). No dispare otra foto aún.');
     if (!cropFile && !fullFile) {
       UIFeedback.toast('No se pudo capturar la imagen', 'danger');
       UI.labelOcrBusy = false;
@@ -5040,7 +5078,7 @@ const UI = {
 
     const tryReturn = () => {
       const texts = UI.labelTokensToTexts(tokens, barcodeTexts);
-      if (texts.length && Domain.SerialMatcher.match(texts, AppState.items)) {
+      if (texts.length && Domain.SerialMatcher.matchWithOrderFuzzy(texts, AppState.items)) {
         return { texts, source: barcodeTexts.length ? 'label_mixed' : 'ocr', matched: true };
       }
       return null;
@@ -5053,26 +5091,20 @@ const UI = {
       return { texts: UI.labelTokensToTexts(tokens, barcodeTexts), source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
     }
 
-    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.88);
+    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1120, 0.85);
     const worker = await getItadLabelOcrWorker();
-    const rotations = [0, 90, 180, 270];
 
-    for (const rot of rotations) {
+    const ocrRotation = async (rot, passLabel) => {
+      if (UI.setLiveScanStatus) UI.setLiveScanStatus(`OCR ${passLabel}…`);
       const baseBlob = rot === 0
         ? compressed.blob
         : await UI.rotateImageBlob(compressed.blob, rot);
-      const scanBarcodes = await UI.decodeBarcodesFromBlob(baseBlob);
-      scanBarcodes.forEach(t => tokens.add(t));
+      (await UI.decodeBarcodesFromBlob(baseBlob)).forEach(t => tokens.add(t));
       hit = tryReturn();
       if (hit) return hit;
 
-      const ocrBlobs = await ClientImageCompressorAdapter.buildOcrVariantBlobs(baseBlob);
+      const ocrBlobs = await ClientImageCompressorAdapter.buildOcrVariantBlobs(baseBlob, { maxVariants: 2 });
       for (const ob of ocrBlobs) {
-        const bc = await UI.decodeBarcodesFromBlob(ob);
-        bc.forEach(t => tokens.add(t));
-        hit = tryReturn();
-        if (hit) return hit;
-
         const data = worker
           ? (await worker.recognize(ob)).data
           : (await Tesseract.recognize(ob, 'eng', {
@@ -5082,12 +5114,21 @@ const UI = {
           })).data;
         const ocrText = data.text || '';
         UI.ingestOcrIntoTokens(ocrText, tokens);
-        const harvested = Domain.SerialMatcher.harvestFromOcrAgainstOrder(ocrText, AppState.items);
-        harvested.forEach(t => tokens.add(t));
+        Domain.SerialMatcher.harvestFromOcrAgainstOrder(ocrText, AppState.items).forEach(t => tokens.add(t));
         hit = tryReturn();
         if (hit) return hit;
       }
-    }
+      return null;
+    };
+
+    hit = await ocrRotation(0, '0°');
+    if (hit) return hit;
+    hit = await ocrRotation(180, '180°');
+    if (hit) return hit;
+    hit = await ocrRotation(90, '90°');
+    if (hit) return hit;
+    hit = await ocrRotation(270, '270°');
+    if (hit) return hit;
 
     const texts = UI.labelTokensToTexts(tokens, barcodeTexts);
     const source = barcodeTexts.length ? 'label_mixed' : 'ocr';
@@ -5126,11 +5167,14 @@ const UI = {
       UI.displayScanResult('warning', 'Lectura vacía o ilegible. Dispare de nuevo el código de barras.');
       return;
     }
-    let match = Domain.SerialMatcher.match(expanded, AppState.items);
+    let match = Domain.SerialMatcher.matchWithOrderFuzzy(expanded, AppState.items);
     if (!match && /^label_photo/.test(via || '')) {
       const harvested = Domain.SerialMatcher.harvestFromOcrAgainstOrder((texts || []).join('\n'), AppState.items);
       if (harvested.length) {
-        match = Domain.SerialMatcher.match(Domain.SerialMatcher.expandCandidates(harvested), AppState.items);
+        match = Domain.SerialMatcher.matchWithOrderFuzzy(
+          Domain.SerialMatcher.expandCandidates(harvested),
+          AppState.items
+        );
       }
     }
     if (!match) {
@@ -5141,7 +5185,7 @@ const UI = {
       AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: scanTokens.join(' | ') || expanded.join(' | ') });
       let fuzzyOnly = null;
       for (const tok of [...scanTokens, ...expanded]) {
-        const manual = Domain.SerialMatcher.normalize(tok);
+        const manual = Domain.SerialMatcher.fixLenovoPfTypo(Domain.SerialMatcher.normalize(tok));
         if (manual.length < 5 && !Domain.SerialMatcher.isDellServiceTagNorm(manual)) continue;
         fuzzyOnly = Domain.SerialMatcher.fuzzyMatch(manual, AppState.items);
         if (fuzzyOnly) break;
@@ -5721,8 +5765,18 @@ const UI = {
   },
 
   async clearLoadedOrderInventory() {
+    let cloudMsg = '';
+    let del = { ok: true };
     if (OrderStore.activeOrderId) {
-      await OrderStore.deleteOrder(OrderStore.activeOrderId);
+      del = await OrderStore.deleteOrder(OrderStore.activeOrderId);
+      if (del.localOnly) {
+        cloudMsg = ' (solo este teléfono — sin Supabase)';
+      } else if (!del.ok) {
+        UIFeedback.toast(`Borrado local OK; nube: ${del.error || 'error'}`, 'warning');
+      } else {
+        cloudMsg = ' · eliminada en Supabase';
+        await OrderStore.pullFromCloud({ silent: true });
+      }
     } else {
       AppState.items = [];
       AppState.rejectionAttempts = [];
@@ -5733,7 +5787,7 @@ const UI = {
     UI.renderReceptionTable();
     UI.renderWipingTable();
     UI.updateOpenOrdersBadge();
-    UIFeedback.toast('Orden activa eliminada de la lista', 'info');
+    UIFeedback.toast(`Orden activa eliminada${cloudMsg}`, del?.ok ? 'success' : 'info');
   },
 
   generateServiceLoadOrderPdf() {
