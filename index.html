@@ -1266,6 +1266,19 @@ const Domain = (() => {
       return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
+    static isPlausibleSerialToken(raw) {
+      const s = String(raw || '').trim();
+      if (!s || s.length < 5) return false;
+      const n = this.normalize(s);
+      if (n.length < 5 || n.length > 20) return false;
+      if (!/[0-9]/.test(n) || !/[A-Z]/.test(n)) return false;
+      const lower = (s.match(/[a-z]/g) || []).length;
+      const upper = (s.match(/[A-Z]/g) || []).length;
+      if (lower >= 3 && lower > upper) return false;
+      if (/^(GEE|ETS|THE|AND|MFG|REG|TYPE|DELL|INTEL|CORE)$/i.test(n)) return false;
+      return true;
+    }
+
     /** Núcleo sin prefijo PF (Lenovo: PF-3AG4Y9 ↔ PF3AG4Y9 ↔ 3AG4Y9) */
     static pfCore(norm) {
       const n = this.normalize(norm);
@@ -1308,7 +1321,87 @@ const Domain = (() => {
       for (const m of s.matchAll(/Serial\s*Number[\s\S]{0,24}?([A-Z0-9][A-Z0-9-]{5,14})/gi)) {
         out.add(m[1].trim());
       }
+      for (const m of s.matchAll(/Service\s*Tag\s*[:\s#]*([A-Z0-9]{7})/gi)) {
+        out.add(m[1].toUpperCase());
+      }
+      for (const m of s.matchAll(/\bS(?:ervice)?\s*T(?:ag)?\s*[:\s]*([A-Z0-9]{7})\b/gi)) {
+        out.add(m[1].toUpperCase());
+      }
+      for (const m of s.matchAll(/\b([A-HJ-NP-Z0-9]{7})\b/g)) {
+        const t = m[1].toUpperCase();
+        if (/[0-9]/.test(t) && /[A-Z]/.test(t)) out.add(t);
+      }
       return Array.from(out);
+    }
+
+    static levenshtein(a, b) {
+      const s = String(a || '');
+      const t = String(b || '');
+      if (s === t) return 0;
+      const m = s.length;
+      const n = t.length;
+      if (!m) return n;
+      if (!n) return m;
+      let prev = new Array(n + 1);
+      let curr = new Array(n + 1);
+      for (let j = 0; j <= n; j++) prev[j] = j;
+      for (let i = 1; i <= m; i++) {
+        curr[0] = i;
+        for (let j = 1; j <= n; j++) {
+          const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+          curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+        }
+        const swap = prev;
+        prev = curr;
+        curr = swap;
+      }
+      return prev[n];
+    }
+
+    /** Busca series de la orden dentro del OCR (tolera 1–2 caracteres mal leídos) */
+    static harvestFromOcrAgainstOrder(ocr, orderItems) {
+      const out = new Set();
+      const flat = String(ocr || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (flat.length < 5) return [];
+      for (const item of orderItems || []) {
+        const s = item.serial.normalized;
+        if (s.length < 5) continue;
+        if (flat.includes(s)) {
+          out.add(s);
+          continue;
+        }
+        const win = s.length;
+        const maxD = win >= 8 ? 2 : 1;
+        for (let i = 0; i <= flat.length - win; i++) {
+          const slice = flat.slice(i, i + win);
+          if (this.levenshtein(slice, s) <= maxD) {
+            out.add(s);
+            break;
+          }
+        }
+      }
+      return Array.from(out);
+    }
+
+    static fuzzyMatch(normText, orderItems) {
+      if (!normText || normText.length < 5) return null;
+      let best = null;
+      for (const item of orderItems || []) {
+        const s = item.serial.normalized;
+        if (Math.abs(s.length - normText.length) > 2) continue;
+        const d = this.levenshtein(normText, s);
+        const maxD = s.length >= 8 ? 2 : 1;
+        if (d > 0 && d <= maxD && (!best || d < best.distance)) {
+          best = { item, distance: d, normText };
+        }
+      }
+      if (!best) return null;
+      return {
+        matchType: best.distance === 1 ? 'FUZZY_OCR_1' : 'FUZZY_OCR_2',
+        item: best.item,
+        confidence: best.distance === 1 ? 0.86 : 0.8,
+        readAs: best.normText
+      };
     }
 
     static match(candidateTexts, orderItems) {
@@ -1316,26 +1409,29 @@ const Domain = (() => {
       for (const text of expanded) {
         const normText = this.normalize(text);
         if (normText.length < 4) continue;
+        if (!this.isPlausibleSerialToken(text)) continue;
 
-        // 1. Coincidencia Exacta
         const exact = orderItems.find(i => i.serial.normalized === normText);
         if (exact) return { matchType: 'EXACT', item: exact, confidence: 1.0 };
 
-        // 2. Coincidencia en Código Largo (código 2D / GS1 DataMatrix de Dell / Lenovo)
-        const embedded = orderItems.find(i => normText.includes(i.serial.normalized));
+        const embedded = orderItems.find(i => i.serial.normalized.length >= 5 && normText.includes(i.serial.normalized));
         if (embedded) return { matchType: 'EMBEDDED', item: embedded, confidence: 0.95 };
 
-        // 3. Lenovo PF: etiqueta PF-3AG4Y9 vs Excel PF3AG4Y9 (mismo núcleo 3AG4Y9)
         const textCore = this.pfCore(normText);
         if (textCore.length >= 5) {
           const pfCoreHit = orderItems.find(i => this.pfCore(i.serial.normalized) === textCore);
           if (pfCoreHit) return { matchType: 'PF_CORE', item: pfCoreHit, confidence: 0.93 };
           const lenovo = orderItems.find(i => {
-            const s = i.serial.normalized;
-            return s.startsWith('PF') && s.length >= 8 && normText.includes(s.slice(2));
+            const sn = i.serial.normalized;
+            return sn.startsWith('PF') && sn.length >= 8 && normText.includes(sn.slice(2));
           });
           if (lenovo) return { matchType: 'PREFIX_LENOVO', item: lenovo, confidence: 0.88 };
         }
+      }
+      for (const text of expanded) {
+        const normText = this.normalize(text);
+        const fuzzy = this.fuzzyMatch(normText, orderItems);
+        if (fuzzy) return fuzzy;
       }
       return null;
     }
@@ -3148,6 +3244,7 @@ const UI = {
   activePhotoItem: null,
   liveScanReader: null,
   liveScanHandled: false,
+  liveScanFrameTimer: null,
 
   init() {
     OrderStore.loadAll();
@@ -3982,11 +4079,12 @@ const UI = {
     }
     if (hintEl) {
       hintEl.textContent = isBarcode
-        ? 'Centre el código de barras a 15–20 cm. Validación automática al leerlo.'
-        : 'Centre el QR o Data Matrix a 15–25 cm. Validación automática al leerlo.';
+        ? 'Centre el código o Data Matrix a 15–20 cm. Si no lee, rote el equipo 180° o use Cámara (foto).'
+        : 'Centre el QR / Data Matrix a 15–25 cm. Etiqueta al derecho; si falla, rote 180° o use foto.';
     }
     UI.liveScanMode = mode;
     UI.liveScanHandled = false;
+    clearInterval(UI.liveScanFrameTimer);
     document.getElementById('modalLiveScan').classList.remove('hidden');
     const video = document.getElementById('liveScanVideo');
     const hints = new Map();
@@ -4005,13 +4103,58 @@ const UI = {
           }
         }
       });
+      UI.liveScanFrameTimer = setInterval(() => UI.pollLiveScanFrame(video, via), 900);
     } catch (err) {
       UIFeedback.toast('No se pudo abrir la cámara: ' + (err.message || err), 'danger');
       UI.stopLiveScanner();
     }
   },
 
+  async pollLiveScanFrame(video, via) {
+    if (UI.liveScanHandled || !video?.videoWidth) return;
+    const texts = await UI.decodeBarcodesFromVideoElement(video, [0, 90, 180, 270]);
+    if (!texts.length) return;
+    UI.liveScanHandled = true;
+    UI.stopLiveScanner();
+    await UI.processValidationTexts(texts, via);
+  },
+
+  async decodeBarcodesFromVideoElement(video, rotations = [0, 180]) {
+    const results = new Set();
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) return [];
+    for (const rot of rotations) {
+      const canvas = document.createElement('canvas');
+      canvas.width = (rot === 90 || rot === 270) ? h : w;
+      canvas.height = (rot === 90 || rot === 270) ? w : h;
+      const ctx = canvas.getContext('2d');
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      ctx.drawImage(video, -w / 2, -h / 2, w, h);
+      if ('BarcodeDetector' in window) {
+        try {
+          const detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'qr_code', 'data_matrix'] });
+          const detected = await detector.detect(canvas);
+          detected.forEach(d => results.add(d.rawValue));
+        } catch (_) { /* ignore */ }
+      }
+      if (!results.size && window.ZXing) {
+        try {
+          const hints = new Map();
+          hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+          const reader = new ZXing.BrowserMultiFormatReader(hints);
+          const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.92));
+          if (res?.getText()) results.add(res.getText());
+        } catch (_) { /* ignore */ }
+      }
+      if (results.size) break;
+    }
+    return Array.from(results);
+  },
+
   stopLiveScanner() {
+    clearInterval(UI.liveScanFrameTimer);
     if (UI.liveScanReader) {
       try { UI.liveScanReader.reset(); } catch (_) { /* ignore */ }
       UI.liveScanReader = null;
@@ -4030,17 +4173,44 @@ const UI = {
     barcodeTexts.forEach(t => tokens.add(t));
 
     if (typeof Tesseract !== 'undefined') {
-      const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.88);
-      const { data } = await Tesseract.recognize(compressed.blob, 'eng', { logger: () => {} });
-      const ocr = data.text || '';
-      Domain.SerialMatcher.extractFromOcr(ocr).forEach(t => tokens.add(t));
-      ocr.split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(l => tokens.add(l));
-      ocr.split(/[^\w\-]+/).filter(s => s.length >= 4).forEach(t => tokens.add(t));
+      const compressed = await ClientImageCompressorAdapter.compressImage(file, 1920, 0.9);
+      const ocrOpts = {
+        logger: () => {},
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/# '
+      };
+      for (const rot of [0, 90, 180, 270]) {
+        const blob = rot === 0
+          ? compressed.blob
+          : await UI.rotateImageBlob(compressed.blob, rot);
+        const { data } = await Tesseract.recognize(blob, 'eng', ocrOpts);
+        const ocr = data.text || '';
+        Domain.SerialMatcher.extractFromOcr(ocr).forEach(t => tokens.add(t));
+        Domain.SerialMatcher.harvestFromOcrAgainstOrder(ocr, AppState.items).forEach(t => tokens.add(t));
+        ocr.split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(l => {
+          if (Domain.SerialMatcher.isPlausibleSerialToken(l)) tokens.add(l);
+        });
+      }
     }
 
-    const texts = Domain.SerialMatcher.expandCandidates(Array.from(tokens));
+    const filtered = Array.from(tokens).filter(t => Domain.SerialMatcher.isPlausibleSerialToken(t) || barcodeTexts.includes(t));
+    const texts = Domain.SerialMatcher.expandCandidates(filtered.length ? filtered : Array.from(tokens));
     const source = barcodeTexts.length ? 'label_mixed' : 'ocr';
     return { texts, source };
+  },
+
+  async rotateImageBlob(blob, degrees) {
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    const w = bitmap.width;
+    const h = bitmap.height;
+    canvas.width = (degrees === 90 || degrees === 270) ? h : w;
+    canvas.height = (degrees === 90 || degrees === 270) ? w : h;
+    const ctx = canvas.getContext('2d');
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((degrees * Math.PI) / 180);
+    ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+    bitmap.close();
+    return new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.9));
   },
 
   async processValidationTexts(texts, via) {
@@ -4052,10 +4222,28 @@ const UI = {
     const match = Domain.SerialMatcher.match(expanded, AppState.items);
     if (!match) {
       AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: expanded.join(' | ') });
+      const manual = Domain.SerialMatcher.normalize((texts || [])[0] || '');
+      const fuzzyOnly = manual.length >= 5
+        ? Domain.SerialMatcher.fuzzyMatch(manual, AppState.items)
+        : null;
+      if (fuzzyOnly) {
+        UI.displayScanResult(
+          'warning',
+          `⚠️ ¿Quiso decir ${fuzzyOnly.item.serial.raw}? (leído: ${fuzzyOnly.readAs || manual})`,
+          fuzzyOnly.item
+        );
+        UIFeedback.modal({
+          title: 'Serie similar en la orden',
+          message: `En la orden: ${fuzzyOnly.item.serial.raw}\nLeído: ${fuzzyOnly.readAs || manual}\n\n¿Marcar como recibido?`,
+          onConfirm: () => UI.finalizeReceiveMatch(fuzzyOnly, via)
+        });
+        return;
+      }
       const hint = /20W0|008RUS|Type/i.test(expanded.join(' '))
-        ? ' El código de barras puede ser Type Number; use botón Cámara (foto) o escriba PF3AG4Y9 manual.'
-        : '';
-      UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${expanded.slice(0, 3).join(', ')}) — NO RECOLECTAR.${hint}`);
+        ? ' En Dell use Service Tag (7 caracteres) o foto con etiqueta al derecho.'
+        : ' Revise ortografía (ej. PF3AG4Y9). Use botón Cámara con buena luz.';
+      const show = expanded.filter(t => Domain.SerialMatcher.isPlausibleSerialToken(t)).slice(0, 3);
+      UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${show.join(', ') || 'sin lectura clara'}) — NO RECOLECTAR.${hint}`);
       return;
     }
     if (match.item.status === 'RECEIVED') {
@@ -4064,7 +4252,8 @@ const UI = {
       UIFeedback.toast('Serie ya aceptada en esta orden', 'warning');
       return;
     }
-    const confirmNeeded = match.matchType !== 'EXACT' && match.confidence < 1;
+    const confirmNeeded = match.matchType !== 'EXACT' && match.confidence < 1
+      || /^FUZZY_/i.test(match.matchType);
     const label = `${match.item.serial.raw} (${match.item.model}) — ${match.matchType}`;
     if (confirmNeeded) {
       UI.displayScanResult('warning', `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`, match.item);
