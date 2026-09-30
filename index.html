@@ -2999,7 +2999,15 @@ const OrderStore = {
       return res;
     }
     const rows = (res.rows || []).filter(r => !hub.isTombstoned(r.lab_order_id));
-    const purged = this.purgeLocalTombstonedOrders(hub);
+    let purged = this.purgeLocalTombstonedOrders(hub);
+    const cloudIds = new Set(rows.map(r => r.lab_order_id));
+    const beforeSync = this.orders.length;
+    this.orders = this.orders.filter(o => {
+      if (hub.isTombstoned(o.id)) return false;
+      if (o.cloudSynced === false) return true;
+      return cloudIds.has(o.id);
+    });
+    purged += Math.max(0, beforeSync - this.orders.length);
     const added = this.mergeCloudRows(rows);
     this.saveAll({ skipCloud: true });
     const active = this.orders.find(o => o.id === this.activeOrderId);
@@ -3213,6 +3221,21 @@ const OrderStore = {
     return this.orders.filter(o => o.status !== 'CLOSED');
   },
 
+  /** Abierta, no tombstone, sin duplicar mismo TC/ORD en el combo */
+  listOpenForUi() {
+    const hub = getItadSupabaseHub();
+    const open = this.listOpen().filter(o => !hub.isConnected() || !hub.isTombstoned(o.id));
+    const byKey = new Map();
+    for (const o of open) {
+      const tc = this.displayTc(o) || '';
+      const ord = this.clientOrderRef(o) || '';
+      const key = `${tc}|${ord}|${o.label || ''}` || o.id;
+      const prev = byKey.get(key);
+      if (!prev || String(o.updatedAt || '') > String(prev.updatedAt || '')) byKey.set(key, o);
+    }
+    return Array.from(byKey.values()).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  },
+
   clientOrderRef(order) {
     const meta = order?.orderMetadata || {};
     let ord = normalizeClientOrd(meta.clientProjectOrder);
@@ -3304,12 +3327,30 @@ async function flushOrderToCloudById(orderId) {
   if (!hub.isConnected() || !orderId) return { ok: false, error: 'Sin conexión' };
   const order = OrderStore.orders.find(o => o.id === orderId);
   if (!order) return { ok: false, error: 'Orden no encontrada' };
+  if (hub.isTombstoned(order.id)) {
+    OrderStore.orders = OrderStore.orders.filter(o => o.id !== orderId);
+    OrderStore.saveAll({ skipCloud: true });
+    return { ok: false, error: 'ORDER_TOMBSTONED', tombstoned: true };
+  }
   const res = await hub.upsertLabOrder(order);
   if (res.ok) {
     order.cloudSynced = true;
     OrderStore.saveAll({ skipCloud: true });
   }
   return res;
+}
+
+/** Solo sube órdenes nuevas locales — nunca re-sube todo el historial al abrir la app */
+async function flushPendingLocalOrdersToCloud() {
+  if (typeof UI !== 'undefined' && UI.labelOcrBusy) return;
+  const hub = getItadSupabaseHub();
+  if (!hub.isConnected()) return;
+  await hub.refreshCloudTombstones();
+  const pending = OrderStore.orders.filter(o => o.cloudSynced === false && !hub.isTombstoned(o.id));
+  if (!pending.length) return;
+  for (const order of pending) {
+    await flushOrderToCloudById(order.id);
+  }
 }
 
 function startCloudMultiUserSync() {
@@ -4617,6 +4658,10 @@ const UI = {
   renderReceptionOrderSelector() {
     const sel = document.getElementById('selectReceptionOpenOrder');
     if (!sel) return;
+    const hub = getItadSupabaseHub();
+    if (hub.isConnected()) {
+      OrderStore.purgeLocalTombstonedOrders(hub);
+    }
     const prev = sel.value;
     sel.innerHTML = '';
 
@@ -4625,7 +4670,7 @@ const UI = {
     optNew.textContent = '＋ Nueva orden al cargar Excel';
     sel.appendChild(optNew);
 
-    const open = OrderStore.listOpen();
+    const open = OrderStore.listOpenForUi();
     open.forEach(o => {
       const opt = document.createElement('option');
       opt.value = o.id;
@@ -4659,9 +4704,9 @@ const UI = {
   },
 
   bindReceptionOrderSelector() {
-    document.getElementById('btnReceptionRefreshOrders').onclick = () => {
+    document.getElementById('btnReceptionRefreshOrders').onclick = async () => {
+      await OrderStore.pullFromCloud({ silent: false });
       UI.renderReceptionOrderSelector();
-      UIFeedback.toast('Lista de órdenes actualizada', 'info');
     };
     document.getElementById('btnReceptionGoOrdersModule').onclick = () => UI.showModule('tab-orders-open');
     document.getElementById('selectReceptionOpenOrder').onchange = () => {
@@ -6480,8 +6525,10 @@ async function bootstrapItadApp() {
   if (hub.isConnected()) {
     await hub.probe();
     UI.updateCloudIndicator();
+    await hub.refreshCloudTombstones();
+    OrderStore.purgeLocalTombstonedOrders(hub);
     await OrderStore.pullFromCloud({ silent: true });
-    await flushOrdersToCloud();
+    await flushPendingLocalOrdersToCloud();
     startCloudMultiUserSync();
     UI.renderReceptionTable();
     UI.renderOpenOrdersList();
