@@ -806,12 +806,14 @@ canvas.signature-pad {
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn btn-primary btn-small" id="btnGoLoadNewOrder">＋ Cargar nueva orden (Excel)</button>
           <button type="button" class="btn btn-secondary btn-small" id="btnRefreshOrdersList">↻ Sincronizar nube</button>
-          <button type="button" class="btn btn-danger btn-small" id="btnDeleteAllOpenOrders">Eliminar todas (nube)</button>
+          <button type="button" class="btn btn-danger btn-small" id="btnDeleteAllOpenOrders">Eliminar abiertas (nube)</button>
+          <button type="button" class="btn btn-danger btn-small" id="btnDeleteAllClosedOrders">Quitar finalizadas (nube)</button>
+          <button type="button" class="btn btn-secondary btn-small" id="btnPurgeAllOrdersCloud" title="Borra todo el historial de órdenes en Supabase">Limpiar todo (nube)</button>
         </div>
       </div>
       <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
-        <strong>Multi-dispositivo:</strong> con Supabase conectado, las órdenes se comparten entre PC y teléfonos.
-        Pulse <strong>↻ Sincronizar nube</strong> o espere ~25 s. Si cargó el Excel dos veces, use <strong>Eliminar todas (nube)</strong> o borre cada fila.
+        <strong>Multi-dispositivo:</strong> use <strong>https://flow-r2.vercel.app</strong> (no URLs viejas de Vercel).
+        Pulse <strong>↻ Sincronizar nube</strong> o espere ~25 s. Las órdenes <em>Finalizada</em> con 0 equipos se quitan con <strong>Quitar finalizadas</strong>.
       </p>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="label">Abiertas</div><div class="value" id="kpiOpenOrders">0</div></div>
@@ -3093,6 +3095,13 @@ const OrderStore = {
     this.persistActive();
     const order = this.orders.find(o => o.id === orderId);
     if (!order) return;
+    if (order.status === 'CLOSED') {
+      order.status = 'OPEN';
+      order.workflow = order.workflow || {};
+      order.workflow.orderClosed = false;
+      order.workflow.orderPhase = order.workflow.orderPhase === 'FINISHED' ? 'RECEPTION' : (order.workflow.orderPhase || 'RECEPTION');
+      order.updatedAt = new Date().toISOString();
+    }
     this.activeOrderId = orderId;
     this.applyToAppState(order);
     this.saveAll();
@@ -3152,19 +3161,27 @@ const OrderStore = {
     return await hub.deleteLabOrderFromCloud(orderId);
   },
 
-  async deleteAllOpenOrders() {
-    const ids = this.listOpen().map(o => o.id);
-    let ok = 0;
+  async deleteOrdersByIds(ids) {
     let fail = 0;
     for (const id of ids) {
       const res = await this.deleteOrder(id);
-      if (res.ok && !res.localOnly) ok += 1;
-      else if (res.localOnly) ok += 1;
-      else fail += 1;
+      if (!res.ok && !res.localOnly) fail += 1;
     }
     const hub = getItadSupabaseHub();
     if (hub.isConnected()) await this.pullFromCloud({ silent: true });
     return { ok: fail === 0, deleted: ids.length, fail };
+  },
+
+  async deleteAllOpenOrders() {
+    return this.deleteOrdersByIds(this.listOpen().map(o => o.id));
+  },
+
+  async deleteAllClosedOrders() {
+    return this.deleteOrdersByIds(this.orders.filter(o => o.status === 'CLOSED').map(o => o.id));
+  },
+
+  async deleteAllOrdersFromCloud() {
+    return this.deleteOrdersByIds(this.orders.map(o => o.id));
   },
 
   listOpen() {
@@ -4000,6 +4017,21 @@ const UI = {
     document.getElementById('btnRefreshOrdersList').onclick = async () => {
       await OrderStore.pullFromCloud({ silent: false });
     };
+    const afterBulkOrderDelete = (res, label) => {
+      document.getElementById('scanResultArea').innerHTML = '';
+      UI.renderOpenOrdersList();
+      UI.renderReceptionOrderSelector();
+      UI.renderReceptionTable();
+      UI.renderWipingTable();
+      UI.renderWorkflowChrome();
+      UIFeedback.toast(
+        res.deleted
+          ? (res.ok ? `${label}: ${res.deleted} eliminada(s) en Supabase` : `${label}: ${res.fail} error(es) en nube`)
+          : 'Nada que eliminar',
+        res.ok && res.deleted ? 'success' : res.deleted ? 'warning' : 'info'
+      );
+    };
+
     document.getElementById('btnDeleteAllOpenOrders').onclick = () => {
       const n = OrderStore.listOpen().length;
       if (!n) {
@@ -4007,25 +4039,38 @@ const UI = {
         return;
       }
       UIFeedback.modal({
-        title: 'Eliminar todas las órdenes abiertas',
-        message: `¿Borrar ${n} orden(es) en este dispositivo y en Supabase?\n\nLAB-PC y teléfonos las quitarán al sincronizar. No se puede deshacer.`,
-        onConfirm: async () => {
-          const res = await OrderStore.deleteAllOpenOrders();
-          document.getElementById('scanResultArea').innerHTML = '';
-          UI.renderOpenOrdersList();
-          UI.renderReceptionOrderSelector();
-          UI.renderReceptionTable();
-          UI.renderWipingTable();
-          UI.renderWorkflowChrome();
-          UIFeedback.toast(
-            res.ok
-              ? `${res.deleted} orden(es) eliminada(s) en Supabase`
-              : `Eliminadas con ${res.fail} error(es) en nube — revise conexión`,
-            res.ok ? 'success' : 'warning'
-          );
-        }
+        title: 'Eliminar órdenes abiertas',
+        message: `¿Borrar ${n} orden(es) abiertas en Supabase y en este equipo?`,
+        onConfirm: async () => afterBulkOrderDelete(await OrderStore.deleteAllOpenOrders(), 'Abiertas')
       });
     };
+
+    document.getElementById('btnDeleteAllClosedOrders').onclick = () => {
+      const n = OrderStore.orders.filter(o => o.status === 'CLOSED').length;
+      if (!n) {
+        UIFeedback.toast('No hay órdenes finalizadas en la lista', 'info');
+        return;
+      }
+      UIFeedback.modal({
+        title: 'Quitar órdenes finalizadas',
+        message: `¿Eliminar ${n} orden(es) marcadas Finalizada (ej. TC-GT-1 vacías)?\n\nSe borran en Supabase y en todos los equipos al sincronizar.`,
+        onConfirm: async () => afterBulkOrderDelete(await OrderStore.deleteAllClosedOrders(), 'Finalizadas')
+      });
+    };
+
+    document.getElementById('btnPurgeAllOrdersCloud').onclick = () => {
+      const n = OrderStore.orders.length;
+      if (!n) {
+        UIFeedback.toast('No hay órdenes guardadas', 'info');
+        return;
+      }
+      UIFeedback.modal({
+        title: 'Limpiar todo el historial',
+        message: `¿Borrar las ${n} orden(es) (abiertas y finalizadas) en Supabase?\n\nUse esto para dejar el lab en cero antes de cargar un Excel nuevo.`,
+        onConfirm: async () => afterBulkOrderDelete(await OrderStore.deleteAllOrdersFromCloud(), 'Historial')
+      });
+    };
+
     document.getElementById('btnGoLoadNewOrder').onclick = () => {
       UI.showModule('tab-reception');
       UIFeedback.toast('Use «Cargar Orden» — cada Excel crea una recepción nueva', 'info');
@@ -4150,9 +4195,10 @@ const UI = {
 
     document.getElementById('kpiOpenOrders').textContent = String(open.length);
     const active = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
-    document.getElementById('kpiActiveOrderLabel').textContent = active
-      ? OrderStore.displayId(active)
+    const activeLabel = active
+      ? `${OrderStore.displayId(active)}${active.status === 'CLOSED' ? ' (finalizada)' : ''}`
       : '—';
+    document.getElementById('kpiActiveOrderLabel').textContent = activeLabel;
 
     const tbody = document.querySelector('#tableOpenOrders tbody');
     tbody.innerHTML = '';
@@ -4186,17 +4232,20 @@ const UI = {
           </div>
         </td>
       `;
-      if (order.status === 'CLOSED') {
-        tr.style.opacity = '0.65';
-        tr.querySelector('.btn-order-activate').disabled = true;
-      }
+      if (order.status === 'CLOSED') tr.style.opacity = '0.65';
       tr.querySelector('.btn-order-activate').onclick = () => {
+        const wasClosed = order.status === 'CLOSED';
         OrderStore.setActive(order.id);
         UI.renderReceptionTable();
         UI.renderWipingTable();
         UI.renderOpenOrdersList();
         UI.showModule('tab-reception');
-        UIFeedback.toast(`Orden activa: ${OrderStore.displayId(order)}`, 'success');
+        UIFeedback.toast(
+          wasClosed
+            ? `Orden reabierta: ${OrderStore.displayId(order)}`
+            : `Orden activa: ${OrderStore.displayId(order)}`,
+          'success'
+        );
       };
       tr.querySelector('.btn-order-edit').onclick = () => UI.openOrderEdit(order.id);
       tr.querySelector('.btn-order-close').onclick = () => {
