@@ -321,6 +321,29 @@ main {
   min-height: 44px;
   font-size: 16px;
 }
+.pistol-scan-block {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 2px solid var(--primary);
+  background: var(--bg-subtle);
+}
+.pistol-scan-block .pistol-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 8px;
+}
+.pistol-scan-block .pistol-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 8px 0 0;
+}
+.pistol-scan-block input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
 .operator-row {
   display: flex;
   gap: 8px;
@@ -795,8 +818,16 @@ canvas.signature-pad {
         <label for="inputOperatorName">Operador en este teléfono:</label>
         <input type="text" id="inputOperatorName" placeholder="Nombre (compartido con el equipo)" autocomplete="name">
       </div>
+      <div class="pistol-scan-block">
+        <label for="inputManualSerial" class="pistol-label">▌ Pistola USB / lector de código de barras</label>
+        <div class="validate-manual-row">
+          <input type="text" id="inputManualSerial" placeholder="Dispare aquí — una serie por línea (Enter)" class="code-mono" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done" inputmode="text">
+          <button type="button" class="btn btn-primary" id="btnValidateManual">Recibir</button>
+        </div>
+        <p class="pistol-hint">El lector escribe la serie y envía Enter. La cámara <strong>no</strong> se abre. Tras cada lectura el cursor vuelve aquí para el siguiente equipo.</p>
+      </div>
       <p style="font-size:11px;color:var(--text-muted);margin:0 0 10px;">
-        Use <strong>QR</strong> o <strong>código de barras</strong> con la cámara en vivo, o <strong>Cámara</strong> para fotografiar la etiqueta (lee código + texto). Series ya recibidas se bloquean entre teléfonos.
+        Sin pistola: <strong>QR</strong> o <strong>Barras (cámara)</strong> cierran solos al leer; <strong>Cámara</strong> = foto de etiqueta. Series ya recibidas se bloquean entre teléfonos.
       </p>
       <div class="capture-grid">
         <button type="button" class="capture-tile primary" id="btnLiveQrScan">
@@ -804,10 +835,10 @@ canvas.signature-pad {
           QR
           <span class="cap-sub">Cámara en vivo</span>
         </button>
-        <button type="button" class="capture-tile primary" id="btnLiveBarcodeScan">
+        <button type="button" class="capture-tile" id="btnLiveBarcodeScan">
           <span class="cap-icon">|||</span>
-          Código de barras
-          <span class="cap-sub">Cámara en vivo</span>
+          Barras (cámara)
+          <span class="cap-sub">Cierra al detectar</span>
         </button>
         <label class="capture-tile primary" for="inputCameraLabelPhoto">
           <span class="cap-icon">📷</span>
@@ -816,10 +847,6 @@ canvas.signature-pad {
         </label>
       </div>
       <input type="file" id="inputCameraLabelPhoto" accept="image/*" capture="environment" hidden>
-      <div class="validate-manual-row">
-        <input type="text" id="inputManualSerial" placeholder="Serie manual (6QV6PQ3, PF-3AG4Y9…)" class="code-mono" autocapitalize="characters" enterkeyhint="go">
-        <button type="button" class="btn btn-secondary" id="btnValidateManual">Verificar</button>
-      </div>
 
       <div id="scanResultArea" style="margin-top:12px;"></div>
       <input type="file" id="inputCameraCosmetic" accept="image/*" capture="environment" hidden>
@@ -1269,14 +1296,68 @@ const Domain = (() => {
     static isPlausibleSerialToken(raw) {
       const s = String(raw || '').trim();
       if (!s || s.length < 5) return false;
+      const weird = (s.match(/[^A-Za-z0-9\-_.:/\s]/g) || []).length;
+      if (weird > 1) return false;
+      if (/\s{2,}/.test(s)) return false;
       const n = this.normalize(s);
       if (n.length < 5 || n.length > 20) return false;
       if (!/[0-9]/.test(n) || !/[A-Z]/.test(n)) return false;
       const lower = (s.match(/[a-z]/g) || []).length;
       const upper = (s.match(/[A-Z]/g) || []).length;
       if (lower >= 3 && lower > upper) return false;
-      if (/^(GEE|ETS|THE|AND|MFG|REG|TYPE|DELL|INTEL|CORE)$/i.test(n)) return false;
+      if (/^(GEE|ETS|THE|AND|MFG|REG|TYPE|DELL|INTEL|CORE|OSSEYD)$/i.test(n)) return false;
       return true;
+    }
+
+    /** Una línea del lector pistola (USB): sin basura OCR ni saltos extra */
+    static sanitizePistolLine(raw) {
+      let s = String(raw || '').split(/[\r\n]+/)[0];
+      s = s.replace(/[\x00-\x1F\x7F]/g, '').trim();
+      s = s.replace(/^\][A-Za-z0-9]{2}/, '');
+      s = s.replace(/^(SN|S\/N|SERIAL\s*#?|SERVICE\s*TAG|ST|P\/N|PN)\s*[:\s#]*/i, '').trim();
+      if (/[|;]/.test(s)) {
+        const parts = s.split(/[|;]/).map(p => p.trim()).filter(Boolean);
+        parts.sort((a, b) => this.normalize(b).length - this.normalize(a).length);
+        s = parts[0] || s;
+      }
+      return s.trim();
+    }
+
+    static isLikelyBarcodeRead(text, orderItems) {
+      const line = this.sanitizePistolLine(text);
+      if (!line) return false;
+      if (this.isPlausibleSerialToken(line)) return true;
+      const norm = this.normalize(line);
+      if (norm.length < 5 || norm.length > 24) return false;
+      return (orderItems || []).some(i => {
+        const sn = i.serial.normalized;
+        return sn === norm || norm.includes(sn) || sn.includes(norm);
+      });
+    }
+
+    /** Candidatos según origen: pistola = una línea; cámara = solo lecturas creíbles */
+    static tokensForValidation(texts, via, orderItems) {
+      const src = texts || [];
+      const photo = /^label_photo|^label_mixed/.test(via || '');
+      if (photo) return this.expandCandidates(src);
+
+      if (via === 'pistol_scan' || via === 'manual_entry') {
+        const line = this.sanitizePistolLine(src[0] || '');
+        return line ? this.expandCandidates([line]) : [];
+      }
+
+      if (via === 'live_barcode' || via === 'live_qr') {
+        const picked = src
+          .map(t => this.sanitizePistolLine(t))
+          .filter(t => t && this.isLikelyBarcodeRead(t, orderItems));
+        if (!picked.length) return [];
+        picked.sort((a, b) => this.normalize(b).length - this.normalize(a).length);
+        return this.expandCandidates([picked[0]]);
+      }
+
+      return this.expandCandidates(
+        src.filter(t => this.isPlausibleSerialToken(t) || this.isLikelyBarcodeRead(t, orderItems))
+      );
     }
 
     /** Núcleo sin prefijo PF (Lenovo: PF-3AG4Y9 ↔ PF3AG4Y9 ↔ 3AG4Y9) */
@@ -1926,7 +2007,19 @@ class ItadSupabaseHub {
         .eq('lab_order_id', labOrderId)
         .eq('updated_at', data.updated_at);
 
-      if (!upErr) return { ok: true, item: items[idx] };
+      if (!upErr) {
+        const localOrder = typeof OrderStore !== 'undefined'
+          ? OrderStore.orders.find(o => o.id === labOrderId)
+          : null;
+        const orderForSync = localOrder
+          ? { ...localOrder, items }
+          : { id: labOrderId, orderMetadata: {}, items, status: 'OPEN', workflow: {} };
+        const norm = await this.syncNormalizedLabOrder(orderForSync);
+        if (!norm.ok) {
+          return { ok: true, item: items[idx], warn: norm.error || 'Tabla assets no actualizada' };
+        }
+        return { ok: true, item: items[idx] };
+      }
       if (attempt === 2) return { ok: false, error: upErr.message || 'Conflicto concurrente' };
     }
     return { ok: false, error: 'No se pudo reservar la serie' };
@@ -2323,7 +2416,41 @@ const OrderStore = {
     if (!opts.skipCloud) scheduleSupabaseLabSync();
   },
 
-  /** Fusiona órdenes de Supabase (gana la más reciente por updated_at) */
+  /** Combina ítems: nunca pierde RECEIVED local ni en nube */
+  mergeOrderItems(localItems, cloudItems) {
+    const bySerial = new Map();
+    const keyOf = j => {
+      const raw = j.serial?.normalized ?? j.serial?.raw ?? j.serial ?? '';
+      try {
+        return Domain.SerialMatcher.normalize(String(raw));
+      } catch {
+        return String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      }
+    };
+    const pick = (a, b) => {
+      if (!a) return b;
+      if (!b) return a;
+      const aRec = a.status === 'RECEIVED';
+      const bRec = b.status === 'RECEIVED';
+      if (aRec && !bRec) return a;
+      if (bRec && !aRec) return b;
+      const tA = new Date(a.scannedAt || 0).getTime();
+      const tB = new Date(b.scannedAt || 0).getTime();
+      return tA >= tB ? a : b;
+    };
+    for (const j of cloudItems || []) {
+      const k = keyOf(j);
+      if (k.length >= 4) bySerial.set(k, { ...j });
+    }
+    for (const j of localItems || []) {
+      const k = keyOf(j);
+      if (k.length < 4) continue;
+      bySerial.set(k, pick(bySerial.get(k), { ...j }));
+    }
+    return Array.from(bySerial.values()).sort((a, b) => (a.itemNo || 0) - (b.itemNo || 0));
+  },
+
+  /** Fusiona órdenes de Supabase (metadata + ítems combinados) */
   mergeCloudRows(rows) {
     const map = new Map(this.orders.map(o => [o.id, o]));
     let incoming = 0;
@@ -2337,7 +2464,14 @@ const OrderStore = {
       }
       const tCloud = new Date(cloudOrder.updatedAt || 0).getTime();
       const tLocal = new Date(local.updatedAt || 0).getTime();
-      if (tCloud >= tLocal) map.set(cloudOrder.id, cloudOrder);
+      const mergedItems = this.mergeOrderItems(local.items, cloudOrder.items);
+      const base = tLocal >= tCloud ? local : cloudOrder;
+      map.set(cloudOrder.id, {
+        ...base,
+        orderMetadata: { ...cloudOrder.orderMetadata, ...local.orderMetadata },
+        items: mergedItems,
+        updatedAt: new Date(Math.max(tCloud, tLocal)).toISOString()
+      });
     }
     this.orders = Array.from(map.values()).sort(
       (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')
@@ -3245,6 +3379,7 @@ const UI = {
   liveScanReader: null,
   liveScanHandled: false,
   liveScanFrameTimer: null,
+  pistolSubmitLock: false,
 
   init() {
     OrderStore.loadAll();
@@ -3273,6 +3408,7 @@ const UI = {
     this.renderReceptionTable();
     this.renderWorkflowChrome();
     this.updateOpenOrdersBadge();
+    this.focusPistolInput();
   },
 
   canAccessPhase(phaseId) {
@@ -3296,6 +3432,7 @@ const UI = {
         OrderStore.pullFromCloud({ silent: true }).then(() => UI.renderPresenceBar());
       }
       UI.renderReceptionOrderSelector();
+      UI.focusPistolInput();
     }
     if (moduleId === 'tab-reconciliation') UI.renderAuditPreview();
     if (moduleId === 'tab-finished') UI.renderFinishedModule();
@@ -4026,26 +4163,68 @@ const UI = {
       }
     };
 
-    const handleManual = () => {
+    const handlePistol = async () => {
+      if (UI.pistolSubmitLock) return;
       const input = document.getElementById('inputManualSerial');
-      const val = input.value.trim();
+      const val = Domain.SerialMatcher.sanitizePistolLine(input.value);
+      input.value = '';
       if (!val) return;
       if (!AppState.items.length) {
         UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
+        UI.focusPistolInput();
         return;
       }
-      UI.processValidationTexts([val], 'manual_entry');
-      input.value = '';
+      UI.pistolSubmitLock = true;
+      try {
+        await UI.processValidationTexts([val], 'pistol_scan');
+      } finally {
+        UI.pistolSubmitLock = false;
+        UI.focusPistolInput();
+      }
     };
 
-    document.getElementById('btnValidateManual').onclick = handleManual;
-    document.getElementById('inputManualSerial').onkeydown = e => { if (e.key === 'Enter') handleManual(); };
+    document.getElementById('btnValidateManual').onclick = () => { handlePistol(); };
+    const pistolInp = document.getElementById('inputManualSerial');
+    pistolInp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handlePistol();
+      }
+    });
+  },
+
+  focusPistolInput() {
+    const el = document.getElementById('inputManualSerial');
+    if (!el || !document.getElementById('tab-reception')?.classList.contains('active')) return;
+    if (document.querySelector('.modal-overlay:not(.hidden)')) return;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (_) { /* ignore */ }
   },
 
   bindLiveQrScanner() {
     document.getElementById('btnLiveQrScan').onclick = () => UI.startLiveCameraScan('qr');
     document.getElementById('btnLiveBarcodeScan').onclick = () => UI.startLiveCameraScan('barcode');
     document.getElementById('btnCloseLiveScan').onclick = () => UI.stopLiveScanner();
+    document.getElementById('btnFocusPistol')?.addEventListener('click', () => {
+      UI.focusPistolInput();
+      UIFeedback.toast('Listo para pistola — dispare el código de barras', 'info');
+    });
+  },
+
+  async finishLiveScanAndClose(texts, via) {
+    if (UI.liveScanHandled) return;
+    const good = (texts || []).filter(t =>
+      Domain.SerialMatcher.isLikelyBarcodeRead(t, AppState.items)
+    );
+    if (!good.length) return;
+    UI.liveScanHandled = true;
+    UI.stopLiveScanner();
+    try {
+      await UI.processValidationTexts(good, via);
+    } finally {
+      UI.focusPistolInput();
+    }
   },
 
   async pickRearCameraDeviceId() {
@@ -4097,9 +4276,7 @@ const UI = {
         if (result && !UI.liveScanHandled) {
           const text = result.getText();
           if (text && text.trim()) {
-            UI.liveScanHandled = true;
-            UI.stopLiveScanner();
-            UI.processValidationTexts([text.trim()], via);
+            UI.finishLiveScanAndClose([text.trim()], via);
           }
         }
       });
@@ -4114,9 +4291,7 @@ const UI = {
     if (UI.liveScanHandled || !video?.videoWidth) return;
     const texts = await UI.decodeBarcodesFromVideoElement(video, [0, 90, 180, 270]);
     if (!texts.length) return;
-    UI.liveScanHandled = true;
-    UI.stopLiveScanner();
-    await UI.processValidationTexts(texts, via);
+    await UI.finishLiveScanAndClose(texts, via);
   },
 
   async decodeBarcodesFromVideoElement(video, rotations = [0, 180]) {
@@ -4218,11 +4393,16 @@ const UI = {
       UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
       return;
     }
-    const expanded = Domain.SerialMatcher.expandCandidates(texts);
+    const expanded = Domain.SerialMatcher.tokensForValidation(texts, via, AppState.items);
+    if (!expanded.length && (via === 'pistol_scan' || via === 'manual_entry')) {
+      UI.displayScanResult('warning', 'Lectura vacía o ilegible. Dispare de nuevo el código de barras.');
+      return;
+    }
     const match = Domain.SerialMatcher.match(expanded, AppState.items);
     if (!match) {
-      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: expanded.join(' | ') });
-      const manual = Domain.SerialMatcher.normalize((texts || [])[0] || '');
+      const readLine = Domain.SerialMatcher.sanitizePistolLine((texts || [])[0] || '');
+      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: readLine || expanded.join(' | ') });
+      const manual = Domain.SerialMatcher.normalize(readLine || (texts || [])[0] || '');
       const fuzzyOnly = manual.length >= 5
         ? Domain.SerialMatcher.fuzzyMatch(manual, AppState.items)
         : null;
@@ -4241,9 +4421,14 @@ const UI = {
       }
       const hint = /20W0|008RUS|Type/i.test(expanded.join(' '))
         ? ' En Dell use Service Tag (7 caracteres) o foto con etiqueta al derecho.'
-        : ' Revise ortografía (ej. PF3AG4Y9). Use botón Cámara con buena luz.';
-      const show = expanded.filter(t => Domain.SerialMatcher.isPlausibleSerialToken(t)).slice(0, 3);
+        : via === 'pistol_scan'
+          ? ' Verifique que la pistola apunte al código Code128 / Data Matrix de la serie.'
+          : ' Revise ortografía (ej. PF3AG4Y9). Use pistola USB o foto con buena luz.';
+      const show = readLine
+        ? [readLine]
+        : expanded.filter(t => Domain.SerialMatcher.isPlausibleSerialToken(t)).slice(0, 2);
       UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${show.join(', ') || 'sin lectura clara'}) — NO RECOLECTAR.${hint}`);
+      if (via === 'pistol_scan') UI.vibrateDevice();
       return;
     }
     if (match.item.status === 'RECEIVED') {
@@ -4265,6 +4450,7 @@ const UI = {
       return;
     }
     await UI.finalizeReceiveMatch(match, via);
+    if (via === 'pistol_scan') UI.focusPistolInput();
   },
 
   async finalizeReceiveMatch(match, via) {
@@ -4273,14 +4459,36 @@ const UI = {
 
     const sess = getLabSession();
     const hub = getItadSupabaseHub();
-    if (hub.isConnected() && OrderStore.activeOrderId) {
-      const claim = await hub.claimSerialReceived({
-        labOrderId: OrderStore.activeOrderId,
+    const orderId = OrderStore.activeOrderId;
+
+    if (hub.isConnected() && orderId) {
+      persistActiveOrder();
+      let ensure = await flushOrderToCloudById(orderId);
+      if (!ensure.ok) {
+        ensure = await flushOrderToCloudById(orderId);
+      }
+      if (!ensure.ok) {
+        UIFeedback.toast(`No se pudo crear/actualizar la orden en Supabase: ${ensure.error || 'error'}`, 'danger');
+        return;
+      }
+
+      let claim = await hub.claimSerialReceived({
+        labOrderId: orderId,
         serialNormalized: match.item.serial.normalized,
         sessionId: sess.sessionId,
         operatorName,
         via
       });
+      if (!claim.ok && claim.error === 'Orden no encontrada en la nube') {
+        await flushOrderToCloudById(orderId);
+        claim = await hub.claimSerialReceived({
+          labOrderId: orderId,
+          serialNormalized: match.item.serial.normalized,
+          sessionId: sess.sessionId,
+          operatorName,
+          via
+        });
+      }
       if (!claim.ok) {
         if (claim.reason === 'ALREADY_RECEIVED') {
           await OrderStore.pullFromCloud({ silent: true });
@@ -4292,13 +4500,36 @@ const UI = {
         UIFeedback.toast(claim.error || 'No se pudo registrar en nube', 'danger');
         return;
       }
+      if (claim.warn) {
+        UIFeedback.toast(`Recibido en orden; aviso: ${claim.warn}`, 'warning');
+      }
     }
 
     match.item.markReceived(via, { operatorName, sessionId: sess.sessionId });
     persistActiveOrder();
-    await flushActiveOrderToCloud();
+
+    if (hub.isConnected() && orderId) {
+      let sync = await flushOrderToCloudById(orderId);
+      if (!sync.ok) sync = await flushOrderToCloudById(orderId);
+      if (!sync.ok) {
+        UIFeedback.toast(`Recibido aquí, pero Supabase falló: ${sync.error}. Pulse ↻ Sincronizar.`, 'warning');
+      } else {
+        UI.setCloudSyncHint('recibido ↑ nube');
+        const idx = OrderStore.orders.findIndex(o => o.id === orderId);
+        if (idx >= 0) {
+          OrderStore.orders[idx].updatedAt = new Date().toISOString();
+          OrderStore.saveAll({ skipCloud: true });
+        }
+      }
+    }
+
     UI.vibrateDevice();
-    UI.displayScanResult('success', `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model}) · ${operatorName}`, match.item);
+    const cloudNote = hub.isConnected() ? ' · guardado Supabase' : ' · solo local (sin Supabase)';
+    UI.displayScanResult(
+      'success',
+      `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model}) · ${operatorName}${cloudNote}`,
+      match.item
+    );
     UI.renderReceptionTable();
   },
 
