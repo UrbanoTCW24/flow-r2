@@ -1811,48 +1811,52 @@ class ClientImageCompressorAdapter {
 
   /** Etiquetas Lenovo (texto claro sobre fondo negro): invertir + contraste para Tesseract */
   static async buildOcrVariantBlobs(sourceBlob) {
-    const bitmap = await createImageBitmap(sourceBlob);
-    const w = bitmap.width;
-    const h = bitmap.height;
-    const sample = document.createElement('canvas');
-    sample.width = Math.min(w, 320);
-    sample.height = Math.min(h, 240);
-    const sctx = sample.getContext('2d');
-    sctx.drawImage(bitmap, 0, 0, sample.width, sample.height);
-    const sampleData = sctx.getImageData(0, 0, sample.width, sample.height);
-    let sum = 0;
-    for (let i = 0; i < sampleData.data.length; i += 4) {
-      sum += 0.299 * sampleData.data[i] + 0.587 * sampleData.data[i + 1] + 0.114 * sampleData.data[i + 2];
-    }
-    const avg = sum / (sampleData.data.length / 4);
-    const darkLabel = avg < 115;
-
-    const render = (invert, contrast) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      ctx.drawImage(bitmap, 0, 0, w, h);
-      const img = ctx.getImageData(0, 0, w, h);
-      for (let i = 0; i < img.data.length; i += 4) {
-        let g = 0.299 * img.data[i] + 0.587 * img.data[i + 1] + 0.114 * img.data[i + 2];
-        if (invert) g = 255 - g;
-        g = Math.min(255, Math.max(0, (g - 128) * contrast + 128));
-        img.data[i] = img.data[i + 1] = img.data[i + 2] = g;
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(sourceBlob);
+      const w = bitmap.width;
+      const h = bitmap.height;
+      const sample = document.createElement('canvas');
+      sample.width = Math.min(w, 320);
+      sample.height = Math.min(h, 240);
+      const sctx = sample.getContext('2d');
+      sctx.drawImage(bitmap, 0, 0, sample.width, sample.height);
+      const sampleData = sctx.getImageData(0, 0, sample.width, sample.height);
+      let sum = 0;
+      for (let i = 0; i < sampleData.data.length; i += 4) {
+        sum += 0.299 * sampleData.data[i] + 0.587 * sampleData.data[i + 1] + 0.114 * sampleData.data[i + 2];
       }
-      ctx.putImageData(img, 0, 0);
-      return canvas;
-    };
+      const avg = sum / (sampleData.data.length / 4);
+      const darkLabel = avg < 115;
 
-    bitmap.close();
-    const variants = darkLabel
-      ? [render(true, 1.45), render(true, 1.2), render(false, 1.25)]
-      : [render(false, 1.25), render(true, 1.35)];
-    const blobs = [];
-    for (const c of variants) {
-      blobs.push(await ClientImageCompressorAdapter.canvasToJpegBlob(c, 0.88));
+      const render = (invert, contrast) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        for (let i = 0; i < img.data.length; i += 4) {
+          let g = 0.299 * img.data[i] + 0.587 * img.data[i + 1] + 0.114 * img.data[i + 2];
+          if (invert) g = 255 - g;
+          g = Math.min(255, Math.max(0, (g - 128) * contrast + 128));
+          img.data[i] = img.data[i + 1] = img.data[i + 2] = g;
+        }
+        ctx.putImageData(img, 0, 0);
+        return canvas;
+      };
+
+      const variants = darkLabel
+        ? [render(true, 1.45), render(true, 1.2), render(false, 1.25)]
+        : [render(false, 1.25), render(true, 1.35)];
+      const blobs = [];
+      for (const c of variants) {
+        blobs.push(await ClientImageCompressorAdapter.canvasToJpegBlob(c, 0.88));
+      }
+      return blobs;
+    } finally {
+      try { bitmap?.close?.(); } catch (_) { /* ignore */ }
     }
-    return blobs;
   }
 }
 
@@ -4688,12 +4692,12 @@ const UI = {
     UI.liveScanHandled = true;
     UI.setLiveScanStatus('Leyendo OCR en el recorte…');
     const blob = await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.92));
+    const file = blob ? new File([blob], 'label-capture.jpg', { type: 'image/jpeg' }) : null;
     UI.stopLiveScanner();
-    if (!blob) {
+    if (!file) {
       UIFeedback.toast('No se pudo capturar la imagen', 'danger');
       return;
     }
-    const file = new File([blob], 'label-capture.jpg', { type: 'image/jpeg' });
     UIFeedback.toast('Analizando etiqueta (código + texto)…', 'info');
     try {
       const { texts, source } = await UI.decodeTextsFromLabelPhoto(file);
