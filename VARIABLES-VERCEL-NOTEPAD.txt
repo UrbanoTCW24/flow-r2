@@ -1,0 +1,58 @@
+================================================================================
+  ITAD flow-r2 — Variables para Vercel (copiar al modal "Add Environment Variable")
+  Repo: https://github.com/UrbanoTCW24/flow-r2
+  Supabase API: https://supabase.com/dashboard/project/fmqtkuyefbawfpeijjnq/settings/api
+================================================================================
+
+En Vercel: Project → Settings → Environment Variables → Add
+
+Tipo recomendado:
+  - ITAD_SUPABASE_URL     → Config  (no es secreto)
+  - ITAD_SUPABASE_ANON_KEY → Secret (es una key, aunque sea "anon" pública)
+
+Environment: marque Production (y Preview si prueba branches)
+
+--------------------------------------------------------------------------------
+VARIABLE 1 de 2
+--------------------------------------------------------------------------------
+Key (nombre exacto):
+
+ITAD_SUPABASE_URL
+
+Value (pegar Project URL de Supabase):
+
+https://fmqtkuyefbawfpeijjnq.supabase.co
+
+Note (opcional):
+  Project URL — Settings → API
+
+--------------------------------------------------------------------------------
+VARIABLE 2 de 2
+--------------------------------------------------------------------------------
+Key (nombre exacto):
+
+ITAD_SUPABASE_ANON_KEY
+
+Value (pegar anon public key de Supabase — empieza con eyJ...):
+
+PEGUE_AQUI_LA_ANON_PUBLIC_KEY
+
+Note (opcional):
+  anon public — NO usar service_role
+
+--------------------------------------------------------------------------------
+OPCIONALES (solo si cambió buckets en Supabase)
+--------------------------------------------------------------------------------
+ITAD_BUCKET_PHOTOS = itad-photos
+ITAD_BUCKET_PDFS   = itad-pdfs
+
+(Si no las crea en Vercel, la app usa esos nombres por defecto.)
+
+--------------------------------------------------------------------------------
+DESPUÉS DE GUARDAR
+--------------------------------------------------------------------------------
+1. Deployments → último deploy → ⋮ → Redeploy
+2. Abra la URL .vercel.app — pill Supabase debe decir "conectado"
+3. NO suba este archivo con la key real a GitHub
+
+================================================================================

@@ -249,6 +249,105 @@ main {
   margin: 0 auto;
   padding: 16px;
 }
+.capture-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.capture-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 92px;
+  padding: 12px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-main);
+  user-select: none;
+}
+.capture-tile .cap-icon { font-size: 26px; line-height: 1; }
+.capture-tile.primary {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: var(--primary);
+}
+.capture-tile .cap-sub {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1.2;
+}
+.capture-tile.primary .cap-sub { color: rgba(59, 130, 246, 0.85); }
+.capture-tile:active { transform: scale(0.98); }
+.presence-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.presence-bar strong { color: var(--text-main); }
+.presence-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  font-size: 11px;
+}
+.validate-manual-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.validate-manual-row input {
+  flex: 1;
+  min-width: 140px;
+  min-height: 44px;
+  font-size: 16px;
+}
+.operator-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.operator-row input {
+  flex: 1;
+  min-width: 160px;
+  min-height: 40px;
+  font-size: 16px;
+}
+.table-container {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#tableReception { min-width: 720px; }
+#liveScanVideo {
+  width: 100%;
+  max-height: 55vh;
+  border-radius: 8px;
+  background: #000;
+  object-fit: cover;
+}
 @media (max-width: 860px) {
   .app-shell { flex-direction: column; }
   .sidebar {
@@ -261,6 +360,12 @@ main {
   }
   .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
   .sidebar-nav button { flex: 1 1 calc(50% - 6px); font-size: 12px; padding: 10px 8px; }
+  main { padding: 12px; }
+  .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+@media (max-width: 640px) {
+  .capture-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr) !important; }
 }
 .section { display: none; }
 .section.active { display: block; animation: fadeIn 0.2s ease-out; }
@@ -515,11 +620,12 @@ canvas.signature-pad {
         <h2>Órdenes de recepción abiertas</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn btn-primary btn-small" id="btnGoLoadNewOrder">＋ Cargar nueva orden (Excel)</button>
-          <button type="button" class="btn btn-secondary btn-small" id="btnRefreshOrdersList">↻ Actualizar</button>
+          <button type="button" class="btn btn-secondary btn-small" id="btnRefreshOrdersList">↻ Sincronizar nube</button>
         </div>
       </div>
       <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
-        Puede tener varias recepciones en paralelo. Seleccione cuál trabajar; el resto queda guardada en este navegador.
+        <strong>Multi-dispositivo:</strong> con Supabase conectado, las órdenes se comparten entre PC y teléfonos.
+        Pulse <strong>↻ Sincronizar nube</strong> o espere ~25 s. Active la misma orden en todos los equipos antes de escanear.
       </p>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="label">Abiertas</div><div class="value" id="kpiOpenOrders">0</div></div>
@@ -673,22 +779,41 @@ canvas.signature-pad {
     <!-- Escaneo & Validación Óptica -->
     <div class="card">
       <div class="card-header">
-        <h2>Validar Activo (Cámara o Entrada Manual)</h2>
+        <h2>Validar activo (cámara del teléfono)</h2>
       </div>
-      <div style="display:flex;gap:10px;margin-bottom:12px;">
-        <label class="btn btn-primary btn-large" style="flex:1;" for="inputCameraBarcode">
-          📷 Escanear Etiqueta / Código de Barras
+      <div id="receptionPresenceBar" class="presence-bar" style="display:none;"></div>
+      <div class="operator-row">
+        <label for="inputOperatorName">Operador en este teléfono:</label>
+        <input type="text" id="inputOperatorName" placeholder="Nombre (compartido con el equipo)" autocomplete="name">
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin:0 0 10px;">
+        Use <strong>QR</strong> o <strong>código de barras</strong> con la cámara en vivo, o <strong>Cámara</strong> para fotografiar la etiqueta (lee código + texto). Series ya recibidas se bloquean entre teléfonos.
+      </p>
+      <div class="capture-grid">
+        <button type="button" class="capture-tile primary" id="btnLiveQrScan">
+          <span class="cap-icon">▦</span>
+          QR
+          <span class="cap-sub">Cámara en vivo</span>
+        </button>
+        <button type="button" class="capture-tile primary" id="btnLiveBarcodeScan">
+          <span class="cap-icon">|||</span>
+          Código de barras
+          <span class="cap-sub">Cámara en vivo</span>
+        </button>
+        <label class="capture-tile primary" for="inputCameraLabelPhoto">
+          <span class="cap-icon">📷</span>
+          Cámara
+          <span class="cap-sub">Foto de etiqueta</span>
         </label>
-        <input type="file" id="inputCameraBarcode" accept="image/*" capture="environment">
       </div>
-      <div style="display:flex;gap:8px;">
-        <input type="text" id="inputManualSerial" placeholder="Escriba o pegue serie (Ej. 6QV6PQ3 o PF-3AG4Y9)" class="code-mono" autocapitalize="characters">
-        <button class="btn btn-secondary" id="btnValidateManual">Verificar</button>
+      <input type="file" id="inputCameraLabelPhoto" accept="image/*" capture="environment" hidden>
+      <div class="validate-manual-row">
+        <input type="text" id="inputManualSerial" placeholder="Serie manual (6QV6PQ3, PF-3AG4Y9…)" class="code-mono" autocapitalize="characters" enterkeyhint="go">
+        <button type="button" class="btn btn-secondary" id="btnValidateManual">Verificar</button>
       </div>
 
       <div id="scanResultArea" style="margin-top:12px;"></div>
-      <!-- Selector para captura de foto estética comprimida -->
-      <input type="file" id="inputCameraCosmetic" accept="image/*" capture="environment">
+      <input type="file" id="inputCameraCosmetic" accept="image/*" capture="environment" hidden>
     </div>
 
     <!-- Tabla de Equipos en Orden -->
@@ -713,6 +838,7 @@ canvas.signature-pad {
               <th>Serie</th>
               <th>Marca / Modelo</th>
               <th>Estado</th>
+              <th>Operador</th>
               <th>Foto S3</th>
               <th>Condición Estética</th>
               <th>Acción</th>
@@ -973,6 +1099,17 @@ canvas.signature-pad {
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="modalLiveScan">
+  <div class="modal-box" style="max-width:520px;width:100%;">
+    <h3 id="liveScanTitle" style="margin-top:0;">Escanear con cámara</h3>
+    <video id="liveScanVideo" playsinline autoplay muted></video>
+    <p id="liveScanHint" style="font-size:12px;color:var(--text-muted);margin:10px 0 0;">Enfoque el código a 15–25 cm. Se validará automáticamente al leerlo.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <button type="button" class="btn btn-secondary" id="btnCloseLiveScan">Cerrar cámara</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /**
  * ============================================================================
@@ -1043,10 +1180,12 @@ const Domain = (() => {
       this.reportPdfRef = null; // { storagePath, publicUrl }
     }
 
-    markReceived(via = 'manual') {
+    markReceived(via = 'manual', meta = {}) {
       this.status = 'RECEIVED';
       this.scannedAt = new Date().toISOString();
       this.scanMethod = via;
+      if (meta.operatorName) this.receivedByName = meta.operatorName;
+      if (meta.sessionId) this.receivedBySession = meta.sessionId;
     }
 
     attachPhoto(photoRef) {
@@ -1192,12 +1331,61 @@ class ClientImageCompressorAdapter {
 
 const ITAD_SB_PROJECT_REF = 'fmqtkuyefbawfpeijjnq';
 const ITAD_SB_DEFAULT_URL = `https://${ITAD_SB_PROJECT_REF}.supabase.co`;
+
+function isValidSupabaseAnonKey(key) {
+  const k = String(key || '').trim();
+  return k.length > 40 && !/PEGUE_AQUI|YOUR_|REPLACE/i.test(k);
+}
 const ITAD_ORDER_INTAKES_TABLE = 'itad_order_intakes';
 const ITAD_LAB_ORDERS_TABLE = 'itad_lab_orders';
 const ITAD_DEVICES_TABLE = 'itad_devices';
 const ITAD_TEST_RUNS_TABLE = 'itad_test_runs';
 const ITAD_TEST_RUN_ASSETS_TABLE = 'itad_test_run_assets';
+const ITAD_PRESENCE_TABLE = 'itad_order_presence';
+const ITAD_SESSION_KEY = 'itad_lab_session_v1';
 let itadSupabaseSyncTimer = null;
+let itadPresenceTimer = null;
+
+function getLabSession() {
+  try {
+    let raw = localStorage.getItem(ITAD_SESSION_KEY);
+    if (!raw) {
+      const id = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      raw = JSON.stringify({ sessionId: id, operatorName: '', createdAt: new Date().toISOString() });
+      localStorage.setItem(ITAD_SESSION_KEY, raw);
+    }
+    return JSON.parse(raw);
+  } catch {
+    return { sessionId: `ses_${Date.now()}`, operatorName: '' };
+  }
+}
+
+function saveLabSession(patch) {
+  const s = { ...getLabSession(), ...patch };
+  localStorage.setItem(ITAD_SESSION_KEY, JSON.stringify(s));
+  return s;
+}
+
+async function ensureOperatorName() {
+  const fromInput = (document.getElementById('inputOperatorName')?.value || '').trim();
+  if (fromInput.length >= 2) {
+    saveLabSession({ operatorName: fromInput });
+    return fromInput;
+  }
+  let s = getLabSession();
+  const name = (s.operatorName || '').trim();
+  if (name.length >= 2) return name;
+  const prompted = window.prompt('Nombre del operador (visible para otros teléfonos en esta orden):', name || '');
+  const clean = (prompted || '').trim();
+  if (clean.length < 2) {
+    UIFeedback.toast('Indique su nombre para registrar recepciones', 'warning');
+    return null;
+  }
+  saveLabSession({ operatorName: clean });
+  const inp = document.getElementById('inputOperatorName');
+  if (inp) inp.value = clean;
+  return clean;
+}
 
 /** Cliente único: Storage + Postgres (memos / TC) */
 class ItadSupabaseHub {
@@ -1221,7 +1409,7 @@ class ItadSupabaseHub {
 
   initClient() {
     this.client = null;
-    if (this.url && this.key && window.supabase) {
+    if (this.url && isValidSupabaseAnonKey(this.key) && window.supabase) {
       try {
         this.client = window.supabase.createClient(this.url, this.key);
       } catch (e) {
@@ -1231,18 +1419,20 @@ class ItadSupabaseHub {
   }
 
   isConnected() {
-    return !!this.client && !!this.key;
+    return !!this.client && isValidSupabaseAnonKey(this.key);
   }
 
   applyRuntimeConfig() {
     const cfg = window.__ITAD_RUNTIME_CONFIG__;
     if (!cfg || typeof cfg !== 'object') return false;
     if (cfg.supabaseUrl) localStorage.setItem('itad_sb_url', String(cfg.supabaseUrl).trim());
-    if (cfg.supabaseAnonKey) localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+    if (isValidSupabaseAnonKey(cfg.supabaseAnonKey)) {
+      localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+    }
     if (cfg.bucketPhotos) localStorage.setItem('itad_sb_bphoto', String(cfg.bucketPhotos).trim());
     if (cfg.bucketPdfs) localStorage.setItem('itad_sb_bpdf', String(cfg.bucketPdfs).trim());
     this.reloadFromStorage();
-    return !!cfg.supabaseAnonKey;
+    return isValidSupabaseAnonKey(cfg.supabaseAnonKey);
   }
 
   async bootstrapFromLocalFile() {
@@ -1251,7 +1441,9 @@ class ItadSupabaseHub {
       if (!res.ok) return false;
       const cfg = await res.json();
       if (cfg.supabaseUrl) localStorage.setItem('itad_sb_url', String(cfg.supabaseUrl).trim());
-      if (cfg.supabaseAnonKey) localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+      if (isValidSupabaseAnonKey(cfg.supabaseAnonKey)) {
+        localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+      }
       if (cfg.bucketPhotos) localStorage.setItem('itad_sb_bphoto', String(cfg.bucketPhotos).trim());
       if (cfg.bucketPdfs) localStorage.setItem('itad_sb_bpdf', String(cfg.bucketPdfs).trim());
       this.reloadFromStorage();
@@ -1418,6 +1610,51 @@ class ItadSupabaseHub {
     return { ok: synced > 0 || !(orders || []).length, synced, assets, error: lastError };
   }
 
+  cloudRowToLocalOrder(row) {
+    const blancco = Array.isArray(row.blancco_meta) ? row.blancco_meta : [];
+    const blanccoRecords = blancco.map(entry => {
+      const serial = entry.serial || entry.normalized || '';
+      const { serial: _s, ...rest } = entry;
+      return [serial, rest];
+    }).filter(([k]) => k);
+
+    return {
+      id: row.lab_order_id,
+      label: row.label || row.order_metadata?.customer || 'Orden ITAD',
+      createdAt: row.created_at || row.updated_at || new Date().toISOString(),
+      updatedAt: row.updated_at || new Date().toISOString(),
+      status: row.status || 'OPEN',
+      orderMetadata: row.order_metadata || {},
+      items: Array.isArray(row.items) ? row.items : [],
+      blanccoRecords,
+      workflow: row.workflow || {
+        orderPhase: 'RECEPTION',
+        activeModule: 'tab-reception',
+        orderClosed: row.status === 'CLOSED'
+      },
+      rejectionAttempts: []
+    };
+  }
+
+  async fetchLabOrdersFromCloud({ includeClosed = false, limit = 80 } = {}) {
+    if (!this.client) return { ok: false, error: 'Sin Supabase', rows: [] };
+    let q = this.client
+      .from(ITAD_LAB_ORDERS_TABLE)
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+    if (!includeClosed) q = q.neq('status', 'CLOSED');
+    const { data, error } = await q;
+    if (error) return { ok: false, error: error.message, rows: [] };
+    return { ok: true, rows: data || [] };
+  }
+
+  async deleteLabOrderFromCloud(labOrderId) {
+    if (!this.client || !labOrderId) return { ok: false };
+    const { error } = await this.client.from(ITAD_LAB_ORDERS_TABLE).delete().eq('lab_order_id', labOrderId);
+    return { ok: !error, error: error?.message };
+  }
+
   async upsertOrderIntake({ tcId, form, memoText }) {
     if (!this.client || !form) return { ok: false, error: 'Sin Supabase' };
     const ord = (form.projectOrder || '').trim().toUpperCase();
@@ -1454,6 +1691,83 @@ class ItadSupabaseHub {
     if (error) return { ok: false, error: error.message };
     if (!data) return { ok: false, error: `No hay registro para ${ord}` };
     return { ok: true, data };
+  }
+
+  /** Reserva serie en nube antes de marcar recibida (evita duplicados entre teléfonos) */
+  async claimSerialReceived({ labOrderId, serialNormalized, sessionId, operatorName, via }) {
+    if (!this.client || !labOrderId) return { ok: false, error: 'Sin Supabase' };
+    const norm = this.normalizeSerialForCloud(serialNormalized);
+    const receivedAt = new Date().toISOString();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { data, error } = await this.client
+        .from(ITAD_LAB_ORDERS_TABLE)
+        .select('items, updated_at')
+        .eq('lab_order_id', labOrderId)
+        .maybeSingle();
+      if (error) return { ok: false, error: error.message };
+      if (!data) return { ok: false, error: 'Orden no encontrada en la nube' };
+
+      const items = Array.isArray(data.items) ? data.items.map(j => ({ ...j })) : [];
+      const idx = items.findIndex(j => this.normalizeSerialForCloud(j.serial) === norm);
+      if (idx < 0) return { ok: false, error: 'Serie no está en la orden autorizada' };
+
+      const row = items[idx];
+      if (row.status === 'RECEIVED') {
+        return {
+          ok: false,
+          reason: 'ALREADY_RECEIVED',
+          by: row.receivedByName || 'otro operador',
+          at: row.scannedAt || null
+        };
+      }
+
+      items[idx] = {
+        ...row,
+        status: 'RECEIVED',
+        scannedAt: receivedAt,
+        scanMethod: via,
+        receivedByName: operatorName,
+        receivedBySession: sessionId
+      };
+
+      const { error: upErr } = await this.client
+        .from(ITAD_LAB_ORDERS_TABLE)
+        .update({ items, updated_at: receivedAt })
+        .eq('lab_order_id', labOrderId)
+        .eq('updated_at', data.updated_at);
+
+      if (!upErr) return { ok: true, item: items[idx] };
+      if (attempt === 2) return { ok: false, error: upErr.message || 'Conflicto concurrente' };
+    }
+    return { ok: false, error: 'No se pudo reservar la serie' };
+  }
+
+  async heartbeatPresence(labOrderId) {
+    if (!this.client || !labOrderId) return;
+    const sess = getLabSession();
+    const operatorName = (document.getElementById('inputOperatorName')?.value || sess.operatorName || 'Operador').trim();
+    const row = {
+      lab_order_id: labOrderId,
+      session_id: sess.sessionId,
+      operator_name: operatorName || 'Operador',
+      device_label: (navigator.userAgent || '').slice(0, 120),
+      last_seen_at: new Date().toISOString()
+    };
+    await this.client.from(ITAD_PRESENCE_TABLE).upsert(row, { onConflict: 'lab_order_id,session_id' });
+  }
+
+  async fetchPresenceForOrder(labOrderId) {
+    if (!this.client || !labOrderId) return [];
+    const cutoff = new Date(Date.now() - 90000).toISOString();
+    const { data, error } = await this.client
+      .from(ITAD_PRESENCE_TABLE)
+      .select('operator_name, session_id, last_seen_at')
+      .eq('lab_order_id', labOrderId)
+      .gte('last_seen_at', cutoff)
+      .order('last_seen_at', { ascending: false });
+    if (error) return [];
+    return data || [];
   }
 }
 
@@ -1709,6 +2023,8 @@ function serializeAssetItem(item) {
     status: item.status,
     scannedAt: item.scannedAt,
     scanMethod: item.scanMethod,
+    receivedByName: item.receivedByName || '',
+    receivedBySession: item.receivedBySession || '',
     cosmeticNote: item.cosmeticNote,
     photoRef: item.photoRef
       ? {
@@ -1742,6 +2058,8 @@ function deserializeAssetItem(j) {
   item.status = j.status || 'PENDING';
   item.scannedAt = j.scannedAt;
   item.scanMethod = j.scanMethod;
+  item.receivedByName = j.receivedByName || '';
+  item.receivedBySession = j.receivedBySession || '';
   item.cosmeticNote = j.cosmeticNote || '';
   item.photoRef = j.photoRef || null;
   item.cpu = j.cpu || '';
@@ -1808,12 +2126,71 @@ const OrderStore = {
         };
   },
 
-  saveAll() {
+  saveAll(opts = {}) {
     localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
       orders: this.orders,
       activeOrderId: this.activeOrderId
     }));
-    scheduleSupabaseLabSync();
+    if (!opts.skipCloud) scheduleSupabaseLabSync();
+  },
+
+  /** Fusiona órdenes de Supabase (gana la más reciente por updated_at) */
+  mergeCloudRows(rows) {
+    const map = new Map(this.orders.map(o => [o.id, o]));
+    let incoming = 0;
+    for (const row of rows || []) {
+      const cloudOrder = getItadSupabaseHub().cloudRowToLocalOrder(row);
+      const local = map.get(cloudOrder.id);
+      if (!local) {
+        map.set(cloudOrder.id, cloudOrder);
+        incoming += 1;
+        continue;
+      }
+      const tCloud = new Date(cloudOrder.updatedAt || 0).getTime();
+      const tLocal = new Date(local.updatedAt || 0).getTime();
+      if (tCloud >= tLocal) map.set(cloudOrder.id, cloudOrder);
+    }
+    this.orders = Array.from(map.values()).sort(
+      (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')
+    );
+    if (this.activeOrderId && !this.orders.find(o => o.id === this.activeOrderId)) {
+      this.activeOrderId = this.orders.find(o => o.status !== 'CLOSED')?.id || this.orders[0]?.id || null;
+    }
+    return incoming;
+  },
+
+  async pullFromCloud({ silent = false } = {}) {
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected()) {
+      if (!silent) UIFeedback.toast('Supabase no conectado — no hay órdenes compartidas', 'warning');
+      return { ok: false };
+    }
+    this.persistActive();
+    const res = await hub.fetchLabOrdersFromCloud({ includeClosed: true });
+    if (!res.ok) {
+      if (!silent) UIFeedback.toast(res.error || 'Error al leer nube', 'danger');
+      return res;
+    }
+    const added = this.mergeCloudRows(res.rows);
+    this.saveAll({ skipCloud: true });
+    const active = this.orders.find(o => o.id === this.activeOrderId);
+    this.applyToAppState(active || null);
+    if (typeof UI !== 'undefined') {
+      UI.renderReceptionOrderSelector();
+      UI.renderReceptionTable();
+      UI.renderOpenOrdersList();
+      UI.renderWorkflowChrome();
+      UI.updateOpenOrdersBadge();
+    }
+    if (!silent) {
+      UIFeedback.toast(
+        res.rows.length
+          ? `Nube: ${res.rows.length} orden(es) · ${added} nueva(s) en este dispositivo`
+          : 'Nube: sin órdenes aún',
+        'info'
+      );
+    }
+    return { ok: true, count: res.rows.length, added };
   },
 
   loadAll() {
@@ -1917,6 +2294,7 @@ const OrderStore = {
       this.applyToAppState(next || null);
     }
     this.saveAll();
+    getItadSupabaseHub().deleteLabOrderFromCloud(orderId);
   },
 
   listOpen() {
@@ -1939,16 +2317,49 @@ function persistActiveOrder() {
   OrderStore.persistActive();
 }
 
+let itadCloudPollTimer = null;
+
 function scheduleSupabaseLabSync() {
   clearTimeout(itadSupabaseSyncTimer);
   itadSupabaseSyncTimer = setTimeout(async () => {
+    await flushOrdersToCloud();
+  }, 400);
+}
+
+async function flushOrdersToCloud() {
+  const hub = getItadSupabaseHub();
+  if (!hub.isConnected()) return;
+  const res = await hub.syncAllLabOrders(OrderStore.orders);
+  if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
+    UI.setCloudSyncHint(res.ok ? `↑ ${res.synced} ord · ${res.assets || 0} eq` : res.error);
+  }
+}
+
+async function flushActiveOrderToCloud() {
+  const hub = getItadSupabaseHub();
+  if (!hub.isConnected() || !OrderStore.activeOrderId) return;
+  const order = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
+  if (order) await hub.upsertLabOrder(order);
+}
+
+function startCloudMultiUserSync() {
+  if (itadCloudPollTimer) return;
+  const tick = () => OrderStore.pullFromCloud({ silent: true });
+  tick();
+  itadCloudPollTimer = setInterval(tick, 25000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') OrderStore.pullFromCloud({ silent: true });
+  });
+
+  const presenceTick = () => {
     const hub = getItadSupabaseHub();
-    if (!hub.isConnected()) return;
-    const res = await hub.syncAllLabOrders(OrderStore.orders);
-    if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
-      UI.setCloudSyncHint(res.ok ? `Sync ${res.synced} orden(es)` : res.error);
+    if (hub.isConnected() && OrderStore.activeOrderId) {
+      hub.heartbeatPresence(OrderStore.activeOrderId);
+      if (typeof UI !== 'undefined' && UI.renderPresenceBar) UI.renderPresenceBar();
     }
-  }, 900);
+  };
+  presenceTick();
+  itadPresenceTimer = setInterval(presenceTick, 20000);
 }
 
 const ORDER_CREATE_FIELD_IDS = [
@@ -2540,9 +2951,19 @@ const UIFeedback = {
  */
 const UI = {
   activePhotoItem: null,
+  liveScanReader: null,
+  liveScanHandled: false,
 
   init() {
     OrderStore.loadAll();
+    const opInp = document.getElementById('inputOperatorName');
+    if (opInp) {
+      opInp.value = getLabSession().operatorName || '';
+      opInp.addEventListener('change', () => {
+        const v = opInp.value.trim();
+        if (v.length >= 2) saveLabSession({ operatorName: v });
+      });
+    }
     this.bindSidebarNav();
     this.bindWorkflowActions();
     this.bindOpenOrdersModule();
@@ -2550,6 +2971,7 @@ const UI = {
     this.bindReceptionOrderSelector();
     this.bindOrderExcelLoader();
     this.bindBarcodeScanner();
+    this.bindLiveQrScanner();
     this.bindCosmeticPhotoCapture();
     this.bindBlanccoBatchProcessing();
     this.bindSignaturePads();
@@ -2577,7 +2999,12 @@ const UI = {
     document.querySelectorAll('#sidebarNav button').forEach(b => {
       b.classList.toggle('active', b.dataset.module === moduleId);
     });
-    if (moduleId === 'tab-reception') UI.renderReceptionOrderSelector();
+    if (moduleId === 'tab-reception') {
+      if (getItadSupabaseHub().isConnected()) {
+        OrderStore.pullFromCloud({ silent: true }).then(() => UI.renderPresenceBar());
+      }
+      UI.renderReceptionOrderSelector();
+    }
     if (moduleId === 'tab-reconciliation') UI.renderAuditPreview();
     if (moduleId === 'tab-finished') UI.renderFinishedModule();
     if (moduleId === 'tab-order-create') {
@@ -2589,7 +3016,9 @@ const UI = {
   },
 
   bindOpenOrdersModule() {
-    document.getElementById('btnRefreshOrdersList').onclick = () => UI.renderOpenOrdersList();
+    document.getElementById('btnRefreshOrdersList').onclick = async () => {
+      await OrderStore.pullFromCloud({ silent: false });
+    };
     document.getElementById('btnGoLoadNewOrder').onclick = () => {
       UI.showModule('tab-reception');
       UIFeedback.toast('Use «Cargar Orden» — cada Excel crea una recepción nueva', 'info');
@@ -3124,33 +3553,24 @@ const UI = {
   },
 
   bindBarcodeScanner() {
-    document.getElementById('inputCameraBarcode').onchange = async e => {
+    document.getElementById('inputCameraLabelPhoto').onchange = async e => {
       const file = e.target.files[0];
       e.target.value = '';
       if (!file) return;
-
       if (!AppState.items.length) {
-        UIFeedback.toast('Cargue primero el archivo de la orden de recolección', 'warning');
+        UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
         return;
       }
-
-      UIFeedback.toast('Decodificando etiqueta de código de barras...', 'info');
+      UIFeedback.toast('Leyendo foto de etiqueta (código + texto)…', 'info');
       try {
-        const texts = await UI.decodeBarcodesFromImage(file);
+        const { texts, source } = await UI.decodeTextsFromLabelPhoto(file);
         if (!texts.length) {
-          UI.displayScanResult('warning', 'No se detectó código legible. Enfoque a 15-20cm o use entrada manual.');
+          UI.displayScanResult('warning', 'No se leyó serie ni código. Repita la foto o use entrada manual.');
           return;
         }
-
-        const match = Domain.SerialMatcher.match(texts, AppState.items);
-        if (match) {
-          UI.applyScanMatch(match, 'camera_barcode');
-        } else {
-          AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: texts.join(' | ') });
-          UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${texts.join(', ')}) — NO RECOLECTAR`);
-        }
+        await UI.processValidationTexts(texts, source === 'ocr' ? 'label_photo_ocr' : 'label_photo_barcode');
       } catch (err) {
-        UI.displayScanResult('danger', 'Error de decodificación: ' + err.message);
+        UI.displayScanResult('danger', 'Error leyendo foto: ' + err.message);
       }
     };
 
@@ -3162,19 +3582,172 @@ const UI = {
         UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
         return;
       }
-
-      const match = Domain.SerialMatcher.match([val], AppState.items);
-      if (match) {
-        UI.applyScanMatch(match, 'manual_entry');
-        input.value = '';
-      } else {
-        AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: val });
-        UI.displayScanResult('danger', `⛔ LA SERIE "${val}" NO PERTENECE A LA ORDEN — NO RECOLECTAR`);
-      }
+      UI.processValidationTexts([val], 'manual_entry');
+      input.value = '';
     };
 
     document.getElementById('btnValidateManual').onclick = handleManual;
     document.getElementById('inputManualSerial').onkeydown = e => { if (e.key === 'Enter') handleManual(); };
+  },
+
+  bindLiveQrScanner() {
+    document.getElementById('btnLiveQrScan').onclick = () => UI.startLiveCameraScan('qr');
+    document.getElementById('btnLiveBarcodeScan').onclick = () => UI.startLiveCameraScan('barcode');
+    document.getElementById('btnCloseLiveScan').onclick = () => UI.stopLiveScanner();
+  },
+
+  async pickRearCameraDeviceId() {
+    if (!navigator.mediaDevices?.enumerateDevices) return undefined;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      const rear = cams.find(d => /back|rear|environment|trás|trasera/i.test(d.label));
+      return rear?.deviceId || cams[cams.length - 1]?.deviceId;
+    } catch {
+      return undefined;
+    }
+  },
+
+  async startLiveCameraScan(mode = 'qr') {
+    if (!AppState.items.length) {
+      UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
+      return;
+    }
+    if (!window.ZXing) {
+      UIFeedback.toast('Lector no disponible — recargue con internet', 'danger');
+      return;
+    }
+    const isBarcode = mode === 'barcode';
+    const titleEl = document.getElementById('liveScanTitle');
+    const hintEl = document.getElementById('liveScanHint');
+    if (titleEl) {
+      titleEl.textContent = isBarcode
+        ? 'Código de barras — cámara en vivo'
+        : 'QR / Data Matrix — cámara en vivo';
+    }
+    if (hintEl) {
+      hintEl.textContent = isBarcode
+        ? 'Centre el código de barras a 15–20 cm. Validación automática al leerlo.'
+        : 'Centre el QR o Data Matrix a 15–25 cm. Validación automática al leerlo.';
+    }
+    UI.liveScanMode = mode;
+    UI.liveScanHandled = false;
+    document.getElementById('modalLiveScan').classList.remove('hidden');
+    const video = document.getElementById('liveScanVideo');
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    UI.liveScanReader = new ZXing.BrowserMultiFormatReader(hints);
+    const deviceId = await UI.pickRearCameraDeviceId();
+    const via = isBarcode ? 'live_barcode' : 'live_qr';
+    try {
+      await UI.liveScanReader.decodeFromVideoDevice(deviceId, video, (result) => {
+        if (result && !UI.liveScanHandled) {
+          const text = result.getText();
+          if (text && text.trim()) {
+            UI.liveScanHandled = true;
+            UI.stopLiveScanner();
+            UI.processValidationTexts([text.trim()], via);
+          }
+        }
+      });
+    } catch (err) {
+      UIFeedback.toast('No se pudo abrir la cámara: ' + (err.message || err), 'danger');
+      UI.stopLiveScanner();
+    }
+  },
+
+  stopLiveScanner() {
+    if (UI.liveScanReader) {
+      try { UI.liveScanReader.reset(); } catch (_) { /* ignore */ }
+      UI.liveScanReader = null;
+    }
+    const video = document.getElementById('liveScanVideo');
+    if (video && video.srcObject) {
+      video.srcObject.getTracks().forEach(t => t.stop());
+      video.srcObject = null;
+    }
+    document.getElementById('modalLiveScan')?.classList.add('hidden');
+  },
+
+  async decodeTextsFromLabelPhoto(file) {
+    const barcodeTexts = await UI.decodeBarcodesFromImage(file);
+    if (barcodeTexts.length) return { texts: barcodeTexts, source: 'barcode' };
+    if (typeof Tesseract === 'undefined') {
+      return { texts: [], source: 'ocr' };
+    }
+    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1280, 0.82);
+    const { data } = await Tesseract.recognize(compressed.blob, 'eng', { logger: () => {} });
+    const ocr = data.text || '';
+    const tokens = new Set();
+    ocr.split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(l => tokens.add(l));
+    ocr.split(/[^\w\-]+/).filter(s => s.length >= 4).forEach(t => tokens.add(t));
+    return { texts: Array.from(tokens), source: 'ocr' };
+  },
+
+  async processValidationTexts(texts, via) {
+    if (!AppState.items.length) {
+      UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
+      return;
+    }
+    const match = Domain.SerialMatcher.match(texts, AppState.items);
+    if (!match) {
+      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: texts.join(' | ') });
+      UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${texts.slice(0, 3).join(', ')}) — NO RECOLECTAR`);
+      return;
+    }
+    if (match.item.status === 'RECEIVED') {
+      const who = match.item.receivedByName || 'registro previo';
+      UI.displayScanResult('warning', `⚠️ ${match.item.serial.raw} ya fue recibida (${who}) — no duplicar`);
+      UIFeedback.toast('Serie ya aceptada en esta orden', 'warning');
+      return;
+    }
+    const confirmNeeded = match.matchType !== 'EXACT' && match.confidence < 1;
+    const label = `${match.item.serial.raw} (${match.item.model}) — ${match.matchType}`;
+    if (confirmNeeded) {
+      UI.displayScanResult('warning', `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`, match.item);
+      UIFeedback.modal({
+        title: 'Confirmar serie',
+        message: `¿Marcar como recibido?\n\nSerie en orden: ${match.item.serial.raw}\nTipo: ${match.matchType}`,
+        onConfirm: () => UI.finalizeReceiveMatch(match, via)
+      });
+      return;
+    }
+    await UI.finalizeReceiveMatch(match, via);
+  },
+
+  async finalizeReceiveMatch(match, via) {
+    const operatorName = await ensureOperatorName();
+    if (!operatorName) return;
+
+    const sess = getLabSession();
+    const hub = getItadSupabaseHub();
+    if (hub.isConnected() && OrderStore.activeOrderId) {
+      const claim = await hub.claimSerialReceived({
+        labOrderId: OrderStore.activeOrderId,
+        serialNormalized: match.item.serial.normalized,
+        sessionId: sess.sessionId,
+        operatorName,
+        via
+      });
+      if (!claim.ok) {
+        if (claim.reason === 'ALREADY_RECEIVED') {
+          await OrderStore.pullFromCloud({ silent: true });
+          UIFeedback.toast(`Ya recibida por ${claim.by || 'otro teléfono'}`, 'warning');
+          UI.displayScanResult('warning', `⚠️ Duplicado en nube: ${match.item.serial.raw} (${claim.by})`);
+          UI.renderReceptionTable();
+          return;
+        }
+        UIFeedback.toast(claim.error || 'No se pudo registrar en nube', 'danger');
+        return;
+      }
+    }
+
+    match.item.markReceived(via, { operatorName, sessionId: sess.sessionId });
+    persistActiveOrder();
+    await flushActiveOrderToCloud();
+    UI.vibrateDevice();
+    UI.displayScanResult('success', `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model}) · ${operatorName}`, match.item);
+    UI.renderReceptionTable();
   },
 
   async decodeBarcodesFromImage(file) {
@@ -3466,27 +4039,29 @@ const UI = {
     document.getElementById('btnShareActa').onclick = () => UI.generateActa(true);
   },
 
-  applyScanMatch(match, via) {
-    const confirmNeeded = match.matchType !== 'EXACT' && match.confidence < 1;
-    const label = `${match.item.serial.raw} (${match.item.model}) — ${match.matchType}`;
-
-    const finalize = () => {
-      match.item.markReceived(via);
-      UI.vibrateDevice();
-      UI.displayScanResult('success', `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model})`, match.item);
-      UI.renderReceptionTable();
-    };
-
-    if (confirmNeeded) {
-      UI.displayScanResult('warning', `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`, match.item);
-      UIFeedback.modal({
-        title: 'Confirmar serie',
-        message: `¿Marcar como recibido?\n\nSerie en orden: ${match.item.serial.raw}\nTipo: ${match.matchType}`,
-        onConfirm: finalize
-      });
+  async renderPresenceBar() {
+    const bar = document.getElementById('receptionPresenceBar');
+    if (!bar) return;
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected() || !OrderStore.activeOrderId || !AppState.items.length) {
+      bar.style.display = 'none';
       return;
     }
-    finalize();
+    const rows = await hub.fetchPresenceForOrder(OrderStore.activeOrderId);
+    if (!rows.length) {
+      bar.style.display = 'none';
+      return;
+    }
+    const uniq = new Map();
+    rows.forEach(r => {
+      const key = r.session_id || r.operator_name;
+      uniq.set(key, r.operator_name || 'Operador');
+    });
+    const chips = Array.from(uniq.values())
+      .map(name => `<span class="presence-chip">${name}</span>`)
+      .join('');
+    bar.innerHTML = `<strong>En esta orden ahora:</strong> ${chips}`;
+    bar.style.display = 'flex';
   },
 
   bindCloudStorageModal() {
@@ -3828,6 +4403,7 @@ const UI = {
       metaEl.textContent = 'Cargue la orden del cliente para validar estrictamente las series autorizadas.';
     }
     UI.updateServiceOrderBadge();
+    UI.renderPresenceBar();
 
     const received = AppState.items.filter(i => i.status === 'RECEIVED');
     const photos = AppState.items.filter(i => i.photoRef).length;
@@ -3851,6 +4427,7 @@ const UI = {
         <td class="code-mono">${item.serial.raw}</td>
         <td>${item.make}<br><small style="color:var(--text-muted)">${item.model}</small></td>
         <td>${statusBadge}</td>
+        <td><small>${item.receivedByName || '—'}</small></td>
         <td>${photoCell}</td>
         <td>${item.cosmeticNote || '—'}</td>
         <td><button type="button" class="btn btn-secondary btn-small" data-serial="${item.serial.normalized}">📷 Foto</button></td>
@@ -4098,9 +4675,12 @@ async function bootstrapItadApp() {
   if (hub.isConnected()) {
     await hub.probe();
     UI.updateCloudIndicator();
-    hub.syncAllLabOrders(OrderStore.orders).then(res => {
-      if (res.ok && res.synced) UI.setCloudSyncHint(`${res.synced} en nube`);
-    });
+    await OrderStore.pullFromCloud({ silent: true });
+    await flushOrdersToCloud();
+    startCloudMultiUserSync();
+    UI.renderReceptionTable();
+    UI.renderOpenOrdersList();
+    UI.setCloudSyncHint('multi-dispositivo ON');
   }
   if (fromVercelEnv && hub.isConnected()) {
     UIFeedback.toast('Supabase conectado (deploy Vercel)', 'success');
