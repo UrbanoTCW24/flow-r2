@@ -28,3 +28,8 @@ window.__ITAD_RUNTIME_CONFIG__ = ${JSON.stringify(cfg, null, 2)};
 
 fs.writeFileSync(path.join(root, 'itad-env.js'), js, 'utf8');
 console.log('[ITAD] itad-env.js generado (Supabase URL:', cfg.supabaseUrl, ', key:', cfg.supabaseAnonKey ? '***' : 'vacía', ')');
+if (process.env.VERCEL && !cfg.supabaseAnonKey) {
+  console.warn(
+    '[ITAD] AVISO: ITAD_SUPABASE_ANON_KEY no está en Vercel. Añádala en Project Settings → Environment Variables (Production) y Redeploy.'
+  );
+}

@@ -341,6 +341,14 @@ main {
   -webkit-overflow-scrolling: touch;
 }
 #tableReception { min-width: 720px; }
+#tableOpenOrders { min-width: 680px; }
+.order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 280px;
+}
+.order-actions .btn { font-size: 11px; padding: 5px 8px; }
 #liveScanVideo {
   width: 100%;
   max-height: 55vh;
@@ -636,7 +644,8 @@ canvas.signature-pad {
           <thead>
             <tr>
               <th>Activa</th>
-              <th>ID / TC</th>
+              <th>Orden cliente</th>
+              <th>TC</th>
               <th>Cliente</th>
               <th>Proyecto</th>
               <th>Equipos</th>
@@ -1099,6 +1108,30 @@ canvas.signature-pad {
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="modalOrderEdit">
+  <div class="modal-box" style="max-width:440px;width:100%;">
+    <h3 style="margin-top:0;">Editar orden</h3>
+    <p id="editOrderIdHint" style="font-size:11px;color:var(--text-muted);margin:0 0 12px;"></p>
+    <label style="font-size:12px;color:var(--text-muted);">Cliente</label>
+    <input type="text" id="editOrderCustomer" style="width:100%;margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted);">Proyecto / PO</label>
+    <input type="text" id="editOrderProject" style="width:100%;margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted);">Orden cliente (Project Order)</label>
+    <input type="text" id="editOrderClientOrd" class="code-mono" placeholder="ORD26580" style="width:100%;margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted);">TC (orden de servicio XS)</label>
+    <input type="text" id="editOrderTc" class="code-mono" placeholder="TC-GT-1" style="width:100%;margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted);">Nombre en lista</label>
+    <input type="text" id="editOrderLabel" style="width:100%;margin-bottom:14px;">
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;">
+      <button type="button" class="btn btn-secondary btn-small" id="btnEditOrderFillOrdOcr" title="Lee ORD/PO del memo OCR en Creación de orden">
+        ↻ ORD desde memo OCR
+      </button>
+      <button type="button" class="btn btn-secondary" id="btnCancelOrderEdit">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="btnSaveOrderEdit">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay hidden" id="modalLiveScan">
   <div class="modal-box" style="max-width:520px;width:100%;">
     <h3 id="liveScanTitle" style="margin-top:0;">Escanear con cámara</h3>
@@ -1233,8 +1266,54 @@ const Domain = (() => {
       return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     }
 
+    /** Núcleo sin prefijo PF (Lenovo: PF-3AG4Y9 ↔ PF3AG4Y9 ↔ 3AG4Y9) */
+    static pfCore(norm) {
+      const n = this.normalize(norm);
+      if (/^PF[A-Z0-9]{5,12}$/.test(n)) return n.slice(2);
+      return n;
+    }
+
+    static expandCandidates(texts) {
+      const out = new Set();
+      for (const text of texts || []) {
+        const raw = String(text || '').trim();
+        if (!raw) continue;
+        out.add(raw);
+        out.add(this.normalize(raw));
+
+        for (const m of raw.matchAll(/PF\s*[-]?\s*([A-Z0-9]{5,12})/gi)) {
+          const core = m[1].replace(/[^A-Z0-9]/gi, '').toUpperCase();
+          if (core.length >= 5) {
+            out.add(`PF${core}`);
+            out.add(core);
+          }
+        }
+        for (const m of raw.matchAll(/Serial\s*Number\s*[:\s]*([A-Z0-9][A-Z0-9-]{5,16})/gi)) {
+          out.add(m[1].trim());
+        }
+      }
+      return Array.from(out);
+    }
+
+    static extractFromOcr(ocr) {
+      const out = new Set();
+      const s = String(ocr || '');
+      for (const m of s.matchAll(/PF\s*[-]?\s*([A-Z0-9]{5,12})/gi)) {
+        const core = m[1].replace(/[^A-Z0-9]/gi, '').toUpperCase();
+        if (core.length >= 5) {
+          out.add(`PF${core}`);
+          out.add(core);
+        }
+      }
+      for (const m of s.matchAll(/Serial\s*Number[\s\S]{0,24}?([A-Z0-9][A-Z0-9-]{5,14})/gi)) {
+        out.add(m[1].trim());
+      }
+      return Array.from(out);
+    }
+
     static match(candidateTexts, orderItems) {
-      for (const text of candidateTexts) {
+      const expanded = this.expandCandidates(candidateTexts);
+      for (const text of expanded) {
         const normText = this.normalize(text);
         if (normText.length < 4) continue;
 
@@ -1246,12 +1325,17 @@ const Domain = (() => {
         const embedded = orderItems.find(i => normText.includes(i.serial.normalized));
         if (embedded) return { matchType: 'EMBEDDED', item: embedded, confidence: 0.95 };
 
-        // 3. Caso Especial Lenovo (etiqueta "PF-3AG4Y9" frente a orden "PF3AG4Y9" o "3AG4Y9")
-        const lenovo = orderItems.find(i => {
-          const s = i.serial.normalized;
-          return s.startsWith('PF') && s.length >= 8 && normText.includes(s.slice(2));
-        });
-        if (lenovo) return { matchType: 'PREFIX_LENOVO', item: lenovo, confidence: 0.88 };
+        // 3. Lenovo PF: etiqueta PF-3AG4Y9 vs Excel PF3AG4Y9 (mismo núcleo 3AG4Y9)
+        const textCore = this.pfCore(normText);
+        if (textCore.length >= 5) {
+          const pfCoreHit = orderItems.find(i => this.pfCore(i.serial.normalized) === textCore);
+          if (pfCoreHit) return { matchType: 'PF_CORE', item: pfCoreHit, confidence: 0.93 };
+          const lenovo = orderItems.find(i => {
+            const s = i.serial.normalized;
+            return s.startsWith('PF') && s.length >= 8 && normText.includes(s.slice(2));
+          });
+          if (lenovo) return { matchType: 'PREFIX_LENOVO', item: lenovo, confidence: 0.88 };
+        }
       }
       return null;
     }
@@ -1565,12 +1649,14 @@ class ItadSupabaseHub {
   }
 
   labOrderRowFromStore(order) {
-    const meta = order.orderMetadata || {};
+    const meta = enrichOrderMetadata({ ...(order.orderMetadata || {}) });
+    const clientOrd = normalizeClientOrd(meta.clientProjectOrder)
+      || normalizeClientOrd(mineOrdPoFromText(meta.project).projectOrder);
     const blancco = (order.blanccoRecords || []).map(([k, v]) => ({ serial: k, ...v }));
     return {
       lab_order_id: order.id,
       tc_id: meta.serviceOrderId || null,
-      client_project_order: meta.clientProjectOrder || null,
+      client_project_order: clientOrd || meta.clientProjectOrder || null,
       po_reference: meta.poReference || null,
       status: order.status || 'OPEN',
       label: order.label || null,
@@ -1618,13 +1704,20 @@ class ItadSupabaseHub {
       return [serial, rest];
     }).filter(([k]) => k);
 
+    const orderMetadata = enrichOrderMetadata({
+      ...(row.order_metadata || {}),
+      serviceOrderId: row.order_metadata?.serviceOrderId || row.tc_id || '',
+      clientProjectOrder: row.order_metadata?.clientProjectOrder || row.client_project_order || '',
+      poReference: row.order_metadata?.poReference || row.po_reference || ''
+    });
+
     return {
       id: row.lab_order_id,
-      label: row.label || row.order_metadata?.customer || 'Orden ITAD',
+      label: row.label || orderMetadata.customer || 'Orden ITAD',
       createdAt: row.created_at || row.updated_at || new Date().toISOString(),
       updatedAt: row.updated_at || new Date().toISOString(),
       status: row.status || 'OPEN',
-      orderMetadata: row.order_metadata || {},
+      orderMetadata,
       items: Array.isArray(row.items) ? row.items : [],
       blanccoRecords,
       workflow: row.workflow || {
@@ -2279,30 +2372,79 @@ const OrderStore = {
     o.workflow = o.workflow || {};
     o.workflow.orderClosed = true;
     o.workflow.orderPhase = 'FINISHED';
+    o.updatedAt = new Date().toISOString();
     if (orderId === this.activeOrderId) {
       AppState.workflow.orderClosed = true;
       AppState.workflow.orderPhase = 'FINISHED';
     }
-    this.saveAll();
+    this.saveAll({ skipCloud: true });
   },
 
-  deleteOrder(orderId) {
+  updateOrderMetadata(orderId, patch) {
+    const o = this.orders.find(x => x.id === orderId);
+    if (!o || !patch) return false;
+    const meta = o.orderMetadata || {};
+    if (patch.customer != null) meta.customer = String(patch.customer).trim();
+    if (patch.project != null) meta.project = String(patch.project).trim();
+    if (patch.serviceOrderId != null) meta.serviceOrderId = String(patch.serviceOrderId).trim();
+    if (patch.clientProjectOrder != null) {
+      meta.clientProjectOrder = normalizeClientOrd(patch.clientProjectOrder) || String(patch.clientProjectOrder).trim();
+    }
+    if (patch.poReference != null) meta.poReference = String(patch.poReference).trim();
+    o.orderMetadata = meta;
+    if (patch.label != null) {
+      const lbl = String(patch.label).trim();
+      if (lbl) o.label = lbl;
+    }
+    o.orderMetadata = enrichOrderMetadata(meta);
+    o.updatedAt = new Date().toISOString();
+    if (orderId === this.activeOrderId) {
+      AppState.orderMetadata = { ...o.orderMetadata };
+      persistActiveOrder();
+    }
+    this.saveAll({ skipCloud: true });
+    return true;
+  },
+
+  async deleteOrder(orderId) {
     this.orders = this.orders.filter(o => o.id !== orderId);
     if (this.activeOrderId === orderId) {
       this.activeOrderId = this.orders.find(x => x.status === 'OPEN')?.id || this.orders[0]?.id || null;
       const next = this.orders.find(o => o.id === this.activeOrderId);
       this.applyToAppState(next || null);
     }
-    this.saveAll();
-    getItadSupabaseHub().deleteLabOrderFromCloud(orderId);
+    this.saveAll({ skipCloud: true });
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected()) return { ok: true, localOnly: true };
+    return await hub.deleteLabOrderFromCloud(orderId);
   },
 
   listOpen() {
     return this.orders.filter(o => o.status !== 'CLOSED');
   },
 
+  clientOrderRef(order) {
+    const meta = order?.orderMetadata || {};
+    let ord = normalizeClientOrd(meta.clientProjectOrder);
+    if (!ord) ord = normalizeClientOrd(mineOrdPoFromText(meta.project).projectOrder);
+    if (!ord) ord = normalizeClientOrd(mineOrdPoFromText(order?.label).projectOrder);
+    if (!ord) ord = normalizeClientOrd(mineOrdPoFromText(meta.poReference).projectOrder);
+    return ord;
+  },
+
+  displayTc(order) {
+    const tc = (order?.orderMetadata?.serviceOrderId || '').trim();
+    if (tc) return tc;
+    return '';
+  },
+
   displayId(order) {
-    return order.orderMetadata?.serviceOrderId || order.id.replace('ord_', '').slice(0, 12);
+    const ord = this.clientOrderRef(order);
+    const tc = this.displayTc(order);
+    if (ord && tc) return `${ord} · ${tc}`;
+    if (ord) return ord;
+    if (tc) return tc;
+    return order.id.replace('ord_', '').slice(0, 12);
   },
 
   phaseLabel(order) {
@@ -2336,10 +2478,16 @@ async function flushOrdersToCloud() {
 }
 
 async function flushActiveOrderToCloud() {
+  if (!OrderStore.activeOrderId) return;
+  await flushOrderToCloudById(OrderStore.activeOrderId);
+}
+
+async function flushOrderToCloudById(orderId) {
   const hub = getItadSupabaseHub();
-  if (!hub.isConnected() || !OrderStore.activeOrderId) return;
-  const order = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
-  if (order) await hub.upsertLabOrder(order);
+  if (!hub.isConnected() || !orderId) return { ok: false, error: 'Sin conexión' };
+  const order = OrderStore.orders.find(o => o.id === orderId);
+  if (!order) return { ok: false, error: 'Orden no encontrada' };
+  return await hub.upsertLabOrder(order);
 }
 
 function startCloudMultiUserSync() {
@@ -2409,13 +2557,42 @@ function orderCreationTextBlob() {
   return [importText, ...fields].join('\n');
 }
 
+/** Completa ORD/PO desde project, memo OCR y columnas Supabase */
+function enrichOrderMetadata(meta) {
+  const m = { ...(meta || {}) };
+  if (!normalizeClientOrd(m.clientProjectOrder)) {
+    const fromProject = mineOrdPoFromText(m.project);
+    const fromPo = mineOrdPoFromText(m.poReference);
+    const fromBlob = mineOrdPoFromText(typeof orderCreationTextBlob === 'function' ? orderCreationTextBlob() : '');
+    const ord = normalizeClientOrd(fromProject.projectOrder)
+      || normalizeClientOrd(fromPo.projectOrder)
+      || normalizeClientOrd(fromBlob.projectOrder);
+    if (ord) m.clientProjectOrder = ord;
+  }
+  if (!m.poReference) {
+    const po = mineOrdPoFromText(m.project).poReference || mineOrdPoFromText(m.poReference).poReference;
+    if (po) m.poReference = po;
+  }
+  return m;
+}
+
+function normalizeClientOrd(raw) {
+  const t = String(raw || '').trim().toUpperCase();
+  if (!t) return '';
+  const compact = t.replace(/^ORDEN/i, 'ORD').replace(/[-\s]/g, '');
+  if (/^ORD\d+$/.test(compact)) return compact;
+  const m = t.match(/\bORD(?:EN)?[-\s#]*(\d{4,8})\b/i);
+  return m ? `ORD${m[1]}` : '';
+}
+
 function mineOrdPoFromText(text) {
   const t = String(text || '');
-  const ord = (t.match(/\b(ORD\d+)\b/i) || [])[1];
+  let projectOrder = normalizeClientOrd((t.match(/\b(ORD(?:EN)?[-\s#]*\d{4,8})\b/i) || [])[1]);
+  if (!projectOrder) projectOrder = normalizeClientOrd((t.match(/\b(ORD\d+)\b/i) || [])[1]);
   let po = (t.match(/\b(PO\s*\d+[\w\s.-]*?)(?=\s*-\s*[A-Z]|\n|$)/i) || [])[1];
   if (!po) po = (t.match(/\b(PO\s[\w\s.-]+?)(?:\s*-\s*Guatemala|\n|$)/i) || [])[1];
   return {
-    projectOrder: ord ? ord.toUpperCase() : '',
+    projectOrder,
     poReference: po ? po.replace(/\s+/g, ' ').trim() : ''
   };
 }
@@ -2855,11 +3032,29 @@ function parseOrderSpreadsheet(arrayBuffer) {
     return String(v).trim();
   };
 
+  let clientProjectOrder = '';
+  let poReference = '';
+  for (let r = 1; r <= 10; r++) {
+    for (let c = 1; c <= 14; c++) {
+      const cell = cellAt(r, c);
+      if (!cell) continue;
+      const mined = mineOrdPoFromText(cell);
+      if (mined.projectOrder && !clientProjectOrder) clientProjectOrder = mined.projectOrder;
+      if (mined.poReference && !poReference) poReference = mined.poReference;
+    }
+  }
+  const projectCell = cellAt(7, 9) || 'RENOVACIÓN 2026';
+  const minedProject = mineOrdPoFromText(projectCell);
+  if (!clientProjectOrder && minedProject.projectOrder) clientProjectOrder = minedProject.projectOrder;
+  if (!poReference && minedProject.poReference) poReference = minedProject.poReference;
+
   const orderMetadata = {
     customer: cellAt(6, 4) || 'CLARO GUATEMALA',
-    project: cellAt(7, 9) || 'RENOVACIÓN 2026',
+    project: [clientProjectOrder, poReference || projectCell].filter(Boolean).join(' · ') || projectCell,
     pickupDate: cellAt(6, 9) || new Date().toISOString().slice(0, 10),
-    address: cellAt(8, 4) || 'Ciudad de Guatemala'
+    address: cellAt(8, 4) || 'Ciudad de Guatemala',
+    clientProjectOrder,
+    poReference: poReference || (/\bPO\s*\d/i.test(projectCell) ? projectCell : '')
   };
 
   const range = XLSX.utils.decode_range(ws['!ref']);
@@ -3023,6 +3218,113 @@ const UI = {
       UI.showModule('tab-reception');
       UIFeedback.toast('Use «Cargar Orden» — cada Excel crea una recepción nueva', 'info');
     };
+    document.getElementById('btnCancelOrderEdit').onclick = () => {
+      UI.editingOrderId = null;
+      document.getElementById('modalOrderEdit').classList.add('hidden');
+    };
+    document.getElementById('btnSaveOrderEdit').onclick = () => UI.saveOrderEdit();
+    document.getElementById('btnEditOrderFillOrdOcr').onclick = () => UI.fillEditOrderFromMemoOcr();
+  },
+
+  fillEditOrderFromMemoOcr() {
+    syncOrderCreationFormFromSource({ silent: true, source: 'memo' });
+    const mined = mineOrdPoFromText(orderCreationTextBlob());
+    if (mined.projectOrder) {
+      document.getElementById('editOrderClientOrd').value = mined.projectOrder;
+      UIFeedback.toast(`ORD detectado: ${mined.projectOrder}`, 'success');
+    } else {
+      UIFeedback.toast('No se encontró ORD en el memo. Pegue el correo en Creación de orden.', 'warning');
+    }
+    if (mined.poReference && !document.getElementById('editOrderProject').value.trim()) {
+      document.getElementById('editOrderProject').value = mined.poReference;
+    }
+  },
+
+  editingOrderId: null,
+
+  openOrderEdit(orderId) {
+    const order = OrderStore.orders.find(o => o.id === orderId);
+    if (!order) return;
+    UI.editingOrderId = orderId;
+    const meta = order.orderMetadata || {};
+    document.getElementById('editOrderIdHint').textContent =
+      `ID interno: ${order.id} · ${OrderStore.displayId(order)}`;
+    document.getElementById('editOrderCustomer').value = meta.customer || order.label || '';
+    document.getElementById('editOrderProject').value = meta.project || meta.poReference || '';
+    let clientOrd = OrderStore.clientOrderRef(order) || meta.clientProjectOrder || '';
+    if (!clientOrd) {
+      const mined = mineOrdPoFromText(orderCreationTextBlob());
+      if (mined.projectOrder) clientOrd = mined.projectOrder;
+    }
+    document.getElementById('editOrderClientOrd').value = clientOrd;
+    document.getElementById('editOrderTc').value = meta.serviceOrderId || '';
+    document.getElementById('editOrderLabel').value = order.label || meta.customer || '';
+    document.getElementById('modalOrderEdit').classList.remove('hidden');
+  },
+
+  async saveOrderEdit() {
+    if (!UI.editingOrderId) return;
+    const orderId = UI.editingOrderId;
+    const ok = OrderStore.updateOrderMetadata(orderId, {
+      customer: document.getElementById('editOrderCustomer').value,
+      project: document.getElementById('editOrderProject').value,
+      clientProjectOrder: document.getElementById('editOrderClientOrd').value,
+      serviceOrderId: document.getElementById('editOrderTc').value,
+      label: document.getElementById('editOrderLabel').value
+    });
+    document.getElementById('modalOrderEdit').classList.add('hidden');
+    UI.editingOrderId = null;
+    if (!ok) return;
+
+    UI.renderOpenOrdersList();
+    UI.renderReceptionOrderSelector();
+    UI.renderReceptionTable();
+    UI.renderWorkflowChrome();
+
+    const hub = getItadSupabaseHub();
+    if (hub.isConnected()) {
+      const res = await flushOrderToCloudById(orderId);
+      if (res.ok) {
+        UI.setCloudSyncHint('orden guardada en nube');
+        UIFeedback.toast('Orden actualizada en Supabase', 'success');
+      } else {
+        UIFeedback.toast(`Guardado local; Supabase: ${res.error || 'error'}`, 'warning');
+      }
+    } else {
+      UIFeedback.toast('Orden actualizada (local). Conecte Supabase para sincronizar.', 'warning');
+    }
+  },
+
+  confirmDeleteOrder(order) {
+    const items = order.items || [];
+    const received = items.filter(i => i.status === 'RECEIVED').length;
+    let msg = `¿Eliminar permanentemente ${OrderStore.displayId(order)}?\n\n`;
+    msg += `${items.length} equipos en inventario`;
+    if (received) msg += ` (${received} ya recibidos)`;
+    msg += '.\n\nSe borra en este dispositivo y en Supabase. No se puede deshacer.';
+    UIFeedback.modal({
+      title: 'Eliminar orden',
+      message: msg,
+      onConfirm: async () => {
+        const wasActive = order.id === OrderStore.activeOrderId;
+        const del = await OrderStore.deleteOrder(order.id);
+        if (wasActive) {
+          document.getElementById('scanResultArea').innerHTML = '';
+        }
+        UI.renderOpenOrdersList();
+        UI.renderReceptionOrderSelector();
+        UI.renderReceptionTable();
+        UI.renderWipingTable();
+        UI.renderWorkflowChrome();
+        if (del.localOnly) {
+          UIFeedback.toast('Orden eliminada (solo local — sin Supabase)', 'warning');
+        } else if (del.ok) {
+          UIFeedback.toast('Orden eliminada de este dispositivo y Supabase', 'success');
+        } else {
+          UIFeedback.toast(`Eliminada local; Supabase: ${del.error || 'error'}`, 'warning');
+        }
+      }
+    });
   },
 
   renderOpenOrdersList() {
@@ -3040,7 +3342,7 @@ const UI = {
     tbody.innerHTML = '';
 
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">No hay órdenes. Cargue un Excel en Recepción.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);">No hay órdenes. Cargue un Excel en Recepción.</td></tr>';
       UI.updateOpenOrdersBadge();
       return;
     }
@@ -3052,19 +3354,25 @@ const UI = {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${isActive ? '<span class="badge badge-success">●</span>' : '—'}</td>
-        <td class="code-mono">${OrderStore.displayId(order)}</td>
+        <td class="code-mono"><strong>${OrderStore.clientOrderRef(order) || '—'}</strong></td>
+        <td class="code-mono">${OrderStore.displayTc(order) || '—'}</td>
         <td>${order.orderMetadata?.customer || '—'}</td>
         <td>${order.orderMetadata?.project || '—'}</td>
         <td>${items.length}</td>
         <td>${received}</td>
         <td><span class="badge ${order.status === 'CLOSED' ? 'badge-muted' : 'badge-warning'}">${OrderStore.phaseLabel(order)}</span></td>
-        <td style="white-space:nowrap;">
-          <button type="button" class="btn btn-secondary btn-small btn-order-activate">Activar</button>
-          <button type="button" class="btn btn-secondary btn-small btn-order-close">Cerrar</button>
+        <td>
+          <div class="order-actions">
+            <button type="button" class="btn btn-secondary btn-small btn-order-activate">Activar</button>
+            <button type="button" class="btn btn-secondary btn-small btn-order-edit">Editar</button>
+            <button type="button" class="btn btn-secondary btn-small btn-order-close">Cerrar</button>
+            <button type="button" class="btn btn-danger btn-small btn-order-delete">Eliminar</button>
+          </div>
         </td>
       `;
       if (order.status === 'CLOSED') {
         tr.style.opacity = '0.65';
+        tr.querySelector('.btn-order-activate').disabled = true;
       }
       tr.querySelector('.btn-order-activate').onclick = () => {
         OrderStore.setActive(order.id);
@@ -3074,18 +3382,28 @@ const UI = {
         UI.showModule('tab-reception');
         UIFeedback.toast(`Orden activa: ${OrderStore.displayId(order)}`, 'success');
       };
+      tr.querySelector('.btn-order-edit').onclick = () => UI.openOrderEdit(order.id);
       tr.querySelector('.btn-order-close').onclick = () => {
+        if (order.status === 'CLOSED') {
+          UIFeedback.toast('Esta orden ya está finalizada', 'info');
+          return;
+        }
         UIFeedback.modal({
           title: 'Cerrar orden',
           message: `¿Archivar ${OrderStore.displayId(order)}? Podrá verla en la lista pero quedará marcada como finalizada.`,
-          onConfirm: () => {
+          onConfirm: async () => {
             OrderStore.closeOrder(order.id);
             UI.renderOpenOrdersList();
             UI.renderWorkflowChrome();
-            UIFeedback.toast('Orden cerrada', 'info');
+            const res = await flushOrderToCloudById(order.id);
+            UIFeedback.toast(
+              res.ok ? 'Orden cerrada y guardada en Supabase' : 'Orden cerrada (local)',
+              res.ok ? 'success' : 'info'
+            );
           }
         });
       };
+      tr.querySelector('.btn-order-delete').onclick = () => UI.confirmDeleteOrder(order);
       tbody.appendChild(tr);
     });
     UI.updateOpenOrdersBadge();
@@ -3422,11 +3740,14 @@ const UI = {
       const opt = document.createElement('option');
       opt.value = o.id;
       const n = (o.items || []).length;
-      const tc = OrderStore.displayId(o);
+      const ord = OrderStore.clientOrderRef(o);
+      const tc = OrderStore.displayTc(o);
+      const head = ord || tc || OrderStore.displayId(o);
+      const tail = ord && tc ? `${ord} · ${tc}` : head;
       const cust = o.orderMetadata?.customer || o.label || '—';
       opt.textContent = n > 0
-        ? `${tc} · ${cust} · ${n} series`
-        : `${tc} · ${cust} · sin Excel aún`;
+        ? `${tail} · ${cust} · ${n} series`
+        : `${tail} · ${cust} · sin Excel aún`;
       sel.appendChild(opt);
     });
 
@@ -3481,12 +3802,38 @@ const UI = {
     };
 
     if (sel === '__new__') {
+      const form = mergeFormWithMined(readOrderCreationForm());
+      const clientOrd = normalizeClientOrd(meta.clientProjectOrder)
+        || normalizeClientOrd(form.projectOrder)
+        || normalizeClientOrd(mineOrdPoFromText(orderCreationTextBlob()).projectOrder);
+
+      const mergedMeta = {
+        ...meta,
+        serviceOrderId: '',
+        clientProjectOrder: clientOrd || meta.clientProjectOrder || '',
+        poReference: meta.poReference || form.poReference || ''
+      };
+
+      const existing = clientOrd
+        ? OrderStore.listOpen().find(o => OrderStore.clientOrderRef(o) === clientOrd)
+        : null;
+      if (existing) {
+        OrderStore.setActive(existing.id);
+        const prevTc = existing.orderMetadata?.serviceOrderId || '';
+        OrderStore.loadExcelIntoActive({
+          ...mergedMeta,
+          serviceOrderId: prevTc
+        }, newItems);
+        finish(`${OrderStore.displayId(existing)}: ${newItems.length} series (${ext.toUpperCase()})`);
+        return;
+      }
+
       OrderStore.createOrder({
-        orderMetadata: { ...meta, serviceOrderId: '' },
+        orderMetadata: mergedMeta,
         items: newItems,
-        label: orderMetadata.customer
+        label: clientOrd || orderMetadata.customer
       });
-      finish(`Nueva orden: ${newItems.length} equipos (${ext.toUpperCase()})`);
+      finish(`${clientOrd || 'Nueva orden'}: ${newItems.length} equipos (${ext.toUpperCase()})`);
       return;
     }
 
@@ -3495,7 +3842,15 @@ const UI = {
     const hasItems = order && (order.items || []).length > 0;
 
     const loadIntoSelected = () => {
-      OrderStore.loadExcelIntoActive(meta, newItems);
+      const form = mergeFormWithMined(readOrderCreationForm());
+      const clientOrd = normalizeClientOrd(meta.clientProjectOrder)
+        || normalizeClientOrd(form.projectOrder)
+        || OrderStore.clientOrderRef(order);
+      OrderStore.loadExcelIntoActive({
+        ...meta,
+        clientProjectOrder: clientOrd || order.orderMetadata?.clientProjectOrder || '',
+        serviceOrderId: order.orderMetadata?.serviceOrderId || meta.serviceOrderId || ''
+      }, newItems);
       const tc = AppState.orderMetadata.serviceOrderId || OrderStore.displayId(order);
       finish(`${tc}: ${newItems.length} series cargadas (${ext.toUpperCase()})`);
     };
@@ -3670,18 +4025,22 @@ const UI = {
   },
 
   async decodeTextsFromLabelPhoto(file) {
-    const barcodeTexts = await UI.decodeBarcodesFromImage(file);
-    if (barcodeTexts.length) return { texts: barcodeTexts, source: 'barcode' };
-    if (typeof Tesseract === 'undefined') {
-      return { texts: [], source: 'ocr' };
-    }
-    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1280, 0.82);
-    const { data } = await Tesseract.recognize(compressed.blob, 'eng', { logger: () => {} });
-    const ocr = data.text || '';
     const tokens = new Set();
-    ocr.split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(l => tokens.add(l));
-    ocr.split(/[^\w\-]+/).filter(s => s.length >= 4).forEach(t => tokens.add(t));
-    return { texts: Array.from(tokens), source: 'ocr' };
+    const barcodeTexts = await UI.decodeBarcodesFromImage(file);
+    barcodeTexts.forEach(t => tokens.add(t));
+
+    if (typeof Tesseract !== 'undefined') {
+      const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.88);
+      const { data } = await Tesseract.recognize(compressed.blob, 'eng', { logger: () => {} });
+      const ocr = data.text || '';
+      Domain.SerialMatcher.extractFromOcr(ocr).forEach(t => tokens.add(t));
+      ocr.split(/\r?\n/).map(s => s.trim()).filter(Boolean).forEach(l => tokens.add(l));
+      ocr.split(/[^\w\-]+/).filter(s => s.length >= 4).forEach(t => tokens.add(t));
+    }
+
+    const texts = Domain.SerialMatcher.expandCandidates(Array.from(tokens));
+    const source = barcodeTexts.length ? 'label_mixed' : 'ocr';
+    return { texts, source };
   },
 
   async processValidationTexts(texts, via) {
@@ -3689,10 +4048,14 @@ const UI = {
       UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
       return;
     }
-    const match = Domain.SerialMatcher.match(texts, AppState.items);
+    const expanded = Domain.SerialMatcher.expandCandidates(texts);
+    const match = Domain.SerialMatcher.match(expanded, AppState.items);
     if (!match) {
-      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: texts.join(' | ') });
-      UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${texts.slice(0, 3).join(', ')}) — NO RECOLECTAR`);
+      AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: expanded.join(' | ') });
+      const hint = /20W0|008RUS|Type/i.test(expanded.join(' '))
+        ? ' El código de barras puede ser Type Number; use botón Cámara (foto) o escriba PF3AG4Y9 manual.'
+        : '';
+      UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${expanded.slice(0, 3).join(', ')}) — NO RECOLECTAR.${hint}`);
       return;
     }
     if (match.item.status === 'RECEIVED') {
@@ -4192,9 +4555,9 @@ const UI = {
     UIFeedback.toast(`Cargado desde Supabase: ${ord}`, 'success');
   },
 
-  clearLoadedOrderInventory() {
+  async clearLoadedOrderInventory() {
     if (OrderStore.activeOrderId) {
-      OrderStore.deleteOrder(OrderStore.activeOrderId);
+      await OrderStore.deleteOrder(OrderStore.activeOrderId);
     } else {
       AppState.items = [];
       AppState.rejectionAttempts = [];
@@ -4688,6 +5051,12 @@ async function bootstrapItadApp() {
     UIFeedback.toast('Supabase cargado desde itad-config.local.json', 'success');
   } else if (!hub.isConnected()) {
     console.info('[ITAD] Supabase: CONFIGURAR-SUPABASE.bat o variables en Vercel.');
+    if (/vercel\.app$/i.test(location.hostname)) {
+      UIFeedback.toast(
+        'Supabase no configurado en Vercel: Settings → Environment Variables → ITAD_SUPABASE_ANON_KEY → Redeploy. O pulse ☁ y pegue la anon key en este teléfono.',
+        'warning'
+      );
+    }
   }
 }
 

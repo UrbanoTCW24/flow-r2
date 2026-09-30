@@ -1,0 +1,27 @@
+================================================================================
+  Cómo subir variables a Vercel con el archivo .env
+================================================================================
+
+Archivo plantilla (en esta carpeta):
+  vercel.env.plantilla
+
+Pasos:
+  1. Copiar a un archivo nuevo llamado:  vercel.env
+  2. Abrir vercel.env con Notepad y pegar su anon key donde dice:
+       ITAD_SUPABASE_ANON_KEY=PEGUE_AQUI_LA_ANON_PUBLIC_KEY
+     (debe quedar en UNA sola línea, sin comillas, empieza con eyJ...)
+  3. Vercel.com → synergycores / flow-r2 → Settings → Environment Variables
+  4. Botón "Import .env" (o "Add" → pegar todo el contenido del archivo)
+  5. Seleccionar entorno: Production (y Preview recomendado)
+  6. Guardar → Deployments → último deploy → Redeploy
+
+Comprobar:
+  Abrir en el navegador:
+    https://flow-r2.vercel.app/itad-env.js
+  Debe mostrar supabaseAnonKey con eyJ... (no vacío).
+
+IMPORTANTE:
+  - NO suba vercel.env a GitHub (contiene secretos).
+  - vercel.env.plantilla SÍ puede estar en el repo (sin key real).
+
+================================================================================

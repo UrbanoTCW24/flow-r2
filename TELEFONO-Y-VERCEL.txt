@@ -1,0 +1,39 @@
+================================================================================
+  ITAD en el TELÉFONO + Supabase en Vercel
+================================================================================
+
+URL oficial (HTTPS, cámara OK):
+  https://flow-r2.vercel.app
+
+Si no ve los 3 botones (QR | Código de barras | Cámara):
+  1. Use exactamente la URL de arriba (no 127.0.0.1, no IP vieja).
+  2. Recarga forzada: Chrome Android → menú → actualizar;
+     iPhone Safari → mantener ↻ → "Recargar sin contenido en caché".
+  3. Pruebe ventana privada / incógnito.
+
+--------------------------------------------------------------------------------
+Supabase en Vercel (todos los teléfonos conectados sin pegar key)
+--------------------------------------------------------------------------------
+1. https://vercel.com → proyecto flow-r2 → Settings → Environment Variables
+2. Agregar (Production + Preview):
+
+   ITAD_SUPABASE_URL
+   https://fmqtkuyefbawfpeijjnq.supabase.co
+
+   ITAD_SUPABASE_ANON_KEY
+   (anon public de Supabase → Settings → API → empieza con eyJ...)
+
+3. Deployments → último → ⋮ → Redeploy (sin cache si aparece la opción).
+4. Abra https://flow-r2.vercel.app/itad-env.js
+   Debe verse "supabaseAnonKey": "eyJ..." (NO vacío "").
+
+Alternativa rápida (solo ESE teléfono):
+  Pulse pill ☁ → pegue anon key → Guardar y Conectar → Probar conexión.
+
+--------------------------------------------------------------------------------
+Wi-Fi local (sin Vercel)
+--------------------------------------------------------------------------------
+  INICIAR-ITAD-TELEFONO.bat (admin) → http://IP-DE-LA-PC:8888/
+  Supabase: itad-config.local.json en la PC + mismo Wi-Fi.
+
+================================================================================
