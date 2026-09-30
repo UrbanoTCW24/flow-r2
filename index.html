@@ -1492,13 +1492,13 @@ const Domain = (() => {
       let s = String(raw || '').split(/[\r\n]+/)[0];
       s = s.replace(/[\x00-\x1F\x7F]/g, '').trim();
       s = s.replace(/^\][A-Za-z0-9]{2}/, '');
-      const stInline = s.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+      const stInline = s.match(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
       if (stInline) return stInline[1].toUpperCase();
       s = s.replace(/^(SN|S\/N|SERIAL\s*#?|SERVICE\s*TAG|ST|P\/N|PN)\s*[:\s#]*/i, '').trim();
       if (/[|;]/.test(s)) {
         const parts = s.split(/[|;]/).map(p => p.trim()).filter(Boolean);
         for (const p of parts) {
-          const st = p.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+          const st = p.match(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
           if (st) return st[1].toUpperCase();
         }
         parts.sort((a, b) => {
@@ -1535,11 +1535,11 @@ const Domain = (() => {
         if (n.length >= 5 && n.length <= 20) out.add(x);
       };
 
-      for (const m of full.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+      for (const m of full.matchAll(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
         push(m[1].toUpperCase(), true);
       }
       full.split(/[\r\n]+/).forEach(line => {
-        const st = line.match(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
+        const st = line.match(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/i);
         if (st) push(st[1].toUpperCase(), true);
         else push(this.sanitizePistolLine(line));
       });
@@ -1633,7 +1633,7 @@ const Domain = (() => {
             out.add(this.fixLenovoPfTypo(this.normalize(chunk)));
           }
         }
-        for (const m of raw.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+        for (const m of raw.matchAll(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
           out.add(m[1].toUpperCase());
         }
       }
@@ -1643,10 +1643,10 @@ const Domain = (() => {
     static extractFromOcr(ocr) {
       const out = new Set();
       const s = String(ocr || '');
-      for (const m of s.matchAll(/\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
+      for (const m of s.matchAll(/ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})\b/gi)) {
         out.add(m[1].toUpperCase());
       }
-      for (const m of s.matchAll(/\bMFGYR\s*[:\s#]*\d{4}[\s\S]{0,40}?\bST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})/gi)) {
+      for (const m of s.matchAll(/MFGYR\s*[:\s#]*\d{4}[\s\S]{0,40}?ST\s*[:\s#]*([A-HJ-NP-Z0-9]{7})/gi)) {
         out.add(m[1].toUpperCase());
       }
       for (const m of s.matchAll(/P\s*[F]\s*[-]?\s*([A-Z0-9]{5,12})/gi)) {
