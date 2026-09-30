@@ -1593,7 +1593,17 @@ const Domain = (() => {
     static tokensForValidation(texts, via, orderItems) {
       const src = texts || [];
       const photo = /^label_photo|^label_mixed/.test(via || '');
-      if (photo) return this.expandCandidates(src);
+      if (photo) {
+        const expanded = this.expandCandidates(src);
+        const joined = (src || []).join(' ');
+        for (const item of orderItems || []) {
+          const sn = item.serial.normalized;
+          if (joined.includes(sn) || this.harvestFromOcrAgainstOrder(joined, [item]).length) {
+            expanded.push(sn);
+          }
+        }
+        return [...new Set(expanded)];
+      }
 
       if (via === 'pistol_scan' || via === 'manual_entry') {
         const merged = [];
@@ -1964,7 +1974,8 @@ function getItadLabelOcrWorker() {
       if (!Tesseract.createWorker) return null;
       const worker = await Tesseract.createWorker('eng', 1, { logger: () => {} });
       await worker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/# '
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/# ',
+        tessedit_pageseg_mode: '11'
       });
       return worker;
     })().catch(() => null);
@@ -4536,9 +4547,9 @@ const UI = {
       }
       UIFeedback.toast('Leyendo foto de etiqueta (código + texto)…', 'info');
       try {
-        const { texts, source } = await UI.decodeTextsFromLabelPhoto(file);
+        const { texts, source } = await UI.decodeLabelPhotoWithFallback(file, null);
         if (!texts.length) {
-          UI.displayScanResult('warning', 'No se leyó serie ni código. Repita la foto o use entrada manual.');
+          UI.displayScanResult('warning', 'No se leyó serie ni código. Encuadre el código de barras, repita la foto o use pistola/manual.');
           return;
         }
         await UI.processValidationTexts(texts, source === 'ocr' ? 'label_photo_ocr' : 'label_photo_barcode');
@@ -4789,32 +4800,72 @@ const UI = {
     }
   },
 
+  async videoFrameToFullCanvas(video) {
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    return canvas;
+  },
+
+  async canvasToJpegFile(canvas, name = 'label-capture.jpg') {
+    const blob = await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.92));
+    return blob ? new File([blob], name, { type: 'image/jpeg' }) : null;
+  },
+
+  async decodeLabelPhotoWithFallback(cropFile, fullFile) {
+    let { texts, source } = await UI.decodeTextsFromLabelPhoto(cropFile);
+    if (texts.length && Domain.SerialMatcher.match(
+      Domain.SerialMatcher.tokensForValidation(texts, 'label_mixed', AppState.items),
+      AppState.items
+    )) {
+      return { texts, source };
+    }
+    if (fullFile) {
+      UIFeedback.toast('Reintentando con foto completa…', 'info');
+      const full = await UI.decodeTextsFromLabelPhoto(fullFile);
+      if (full.texts.length) {
+        texts = full.texts;
+        source = full.source;
+      }
+    }
+    return { texts, source };
+  },
+
   async captureOcrLabelFromViewport() {
     if (UI.liveScanHandled) return;
     const video = document.getElementById('liveScanVideo');
-    const canvas = UI.videoFrameToCroppedCanvas(video, 'ocr');
-    if (!canvas) {
+    const cropCanvas = UI.videoFrameToCroppedCanvas(video, 'ocr');
+    const fullCanvas = await UI.videoFrameToFullCanvas(video);
+    if (!cropCanvas && !fullCanvas) {
       UIFeedback.toast('Espere a que la cámara enfoque', 'warning');
       return;
     }
     UI.liveScanHandled = true;
     UI.setLiveScanStatus('Leyendo OCR en el recorte…');
-    const blob = await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.92));
-    const file = blob ? new File([blob], 'label-capture.jpg', { type: 'image/jpeg' }) : null;
+    const cropFile = cropCanvas ? await UI.canvasToJpegFile(cropCanvas, 'label-crop.jpg') : null;
+    const fullFile = fullCanvas ? await UI.canvasToJpegFile(fullCanvas, 'label-full.jpg') : null;
     UI.stopLiveScanner();
-    if (!file) {
+    if (!cropFile && !fullFile) {
       UIFeedback.toast('No se pudo capturar la imagen', 'danger');
       return;
     }
     UIFeedback.toast('Analizando etiqueta (código + texto)…', 'info');
     try {
-      const { texts, source } = await UI.decodeTextsFromLabelPhoto(file);
+      const { texts, source } = await UI.decodeLabelPhotoWithFallback(
+        cropFile || fullFile,
+        cropFile && fullFile ? fullFile : null
+      );
       if (!texts.length) {
-        UI.displayScanResult('warning', 'No se leyó serie. Acérquese, alinee el marco y repita.');
+        UI.displayScanResult('warning', 'No se leyó serie en la foto. Use pistola USB, encuadre el código de barras, o escriba PF3AG4Y9 manual.');
         UI.focusPistolInput();
         return;
       }
-      await UI.processValidationTexts(texts, source === 'ocr' ? 'label_photo_ocr' : 'label_photo_barcode');
+      const via = source === 'ocr' ? 'label_photo_ocr' : 'label_photo_barcode';
+      await UI.processValidationTexts(texts, via);
     } catch (err) {
       UI.displayScanResult('danger', 'Error leyendo etiqueta: ' + (err.message || err));
     }
@@ -4925,42 +4976,67 @@ const UI = {
     const barcodeTexts = await UI.decodeBarcodesFromImage(file);
     barcodeTexts.forEach(t => tokens.add(t));
 
-    let texts = UI.labelTokensToTexts(tokens, barcodeTexts);
-    if (Domain.SerialMatcher.match(texts, AppState.items)) {
-      return { texts, source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
-    }
+    const tryReturn = () => {
+      const texts = UI.labelTokensToTexts(tokens, barcodeTexts);
+      if (texts.length && Domain.SerialMatcher.match(texts, AppState.items)) {
+        return { texts, source: barcodeTexts.length ? 'label_mixed' : 'ocr', matched: true };
+      }
+      return null;
+    };
+
+    let hit = tryReturn();
+    if (hit) return hit;
 
     if (typeof Tesseract === 'undefined') {
-      return { texts, source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
+      return { texts: UI.labelTokensToTexts(tokens, barcodeTexts), source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
     }
 
-    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1280, 0.82);
+    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.88);
     const worker = await getItadLabelOcrWorker();
-    const rotations = [0, 180];
+    const rotations = [0, 90, 180, 270];
 
     for (const rot of rotations) {
       const baseBlob = rot === 0
         ? compressed.blob
         : await UI.rotateImageBlob(compressed.blob, rot);
+      const scanBarcodes = await UI.decodeBarcodesFromBlob(baseBlob);
+      scanBarcodes.forEach(t => tokens.add(t));
+      hit = tryReturn();
+      if (hit) return hit;
+
       const ocrBlobs = await ClientImageCompressorAdapter.buildOcrVariantBlobs(baseBlob);
       for (const ob of ocrBlobs) {
+        const bc = await UI.decodeBarcodesFromBlob(ob);
+        bc.forEach(t => tokens.add(t));
+        hit = tryReturn();
+        if (hit) return hit;
+
         const data = worker
           ? (await worker.recognize(ob)).data
           : (await Tesseract.recognize(ob, 'eng', {
             logger: () => {},
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/# '
+            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:/# ',
+            tessedit_pageseg_mode: '11'
           })).data;
-        UI.ingestOcrIntoTokens(data.text || '', tokens);
-        texts = UI.labelTokensToTexts(tokens, barcodeTexts);
-        if (Domain.SerialMatcher.match(texts, AppState.items)) {
-          return { texts, source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
-        }
+        const ocrText = data.text || '';
+        UI.ingestOcrIntoTokens(ocrText, tokens);
+        const harvested = Domain.SerialMatcher.harvestFromOcrAgainstOrder(ocrText, AppState.items);
+        harvested.forEach(t => tokens.add(t));
+        hit = tryReturn();
+        if (hit) return hit;
       }
     }
 
-    texts = UI.labelTokensToTexts(tokens, barcodeTexts);
+    const texts = UI.labelTokensToTexts(tokens, barcodeTexts);
     const source = barcodeTexts.length ? 'label_mixed' : 'ocr';
     return { texts, source };
+  },
+
+  async decodeBarcodesFromBlob(blob) {
+    const file = blob instanceof File
+      ? blob
+      : new File([blob], 'scan.jpg', { type: blob.type || 'image/jpeg' });
+    return UI.decodeBarcodesFromImage(file);
   },
 
   async rotateImageBlob(blob, degrees) {
@@ -5138,47 +5214,45 @@ const UI = {
 
   async decodeBarcodesFromImage(file) {
     const results = new Set();
-    const bitmap = await createImageBitmap(file);
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(file);
 
-    // 1. Detección nativa del navegador (Android Chrome / iOS 17+)
-    if ('BarcodeDetector' in window) {
-      try {
-        const detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'qr_code', 'data_matrix'] });
-        const detected = await detector.detect(bitmap);
-        detected.forEach(d => results.add(d.rawValue));
-      } catch (e) { }
-    }
-
-    // 2. Detección con ZXing MultiFormat y rotaciones
-    if (!results.size && window.ZXing) {
-      const hints = new Map();
-      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-      const reader = new ZXing.BrowserMultiFormatReader(hints);
-
-      for (const rot of [0, 90, 180, 270]) {
-        const canvas = document.createElement('canvas');
-        const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
-        const w = Math.round(bitmap.width * scale);
-        const h = Math.round(bitmap.height * scale);
-
-        canvas.width = (rot === 90 || rot === 270) ? h : w;
-        canvas.height = (rot === 90 || rot === 270) ? w : h;
-        const ctx = canvas.getContext('2d');
-        ctx.translate(canvas.width / 2, canvas.height / 2);
-        ctx.rotate((rot * Math.PI) / 180);
-        ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
-
+      if ('BarcodeDetector' in window) {
         try {
-          const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.85));
-          if (res && res.getText()) {
-            results.add(res.getText());
-            break;
-          }
-        } catch (err) { }
+          const detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'qr_code', 'data_matrix'] });
+          const detected = await detector.detect(bitmap);
+          detected.forEach(d => { if (d.rawValue) results.add(d.rawValue.trim()); });
+        } catch (_) { /* ignore */ }
       }
-    }
 
-    bitmap.close();
+      if (window.ZXing) {
+        const hints = new Map();
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+        const reader = new ZXing.BrowserMultiFormatReader(hints);
+
+        for (const rot of [0, 90, 180, 270]) {
+          const canvas = document.createElement('canvas');
+          const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+          const w = Math.round(bitmap.width * scale);
+          const h = Math.round(bitmap.height * scale);
+
+          canvas.width = (rot === 90 || rot === 270) ? h : w;
+          canvas.height = (rot === 90 || rot === 270) ? w : h;
+          const ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.rotate((rot * Math.PI) / 180);
+          ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+
+          try {
+            const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.9));
+            if (res?.getText()) results.add(res.getText().trim());
+          } catch (_) { /* ignore */ }
+        }
+      }
+    } finally {
+      try { bitmap?.close?.(); } catch (_) { /* ignore */ }
+    }
     return Array.from(results);
   },
 
