@@ -806,11 +806,12 @@ canvas.signature-pad {
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button type="button" class="btn btn-primary btn-small" id="btnGoLoadNewOrder">＋ Cargar nueva orden (Excel)</button>
           <button type="button" class="btn btn-secondary btn-small" id="btnRefreshOrdersList">↻ Sincronizar nube</button>
+          <button type="button" class="btn btn-danger btn-small" id="btnDeleteAllOpenOrders">Eliminar todas (nube)</button>
         </div>
       </div>
       <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
         <strong>Multi-dispositivo:</strong> con Supabase conectado, las órdenes se comparten entre PC y teléfonos.
-        Pulse <strong>↻ Sincronizar nube</strong> o espere ~25 s. Active la misma orden en todos los equipos antes de escanear.
+        Pulse <strong>↻ Sincronizar nube</strong> o espere ~25 s. Si cargó el Excel dos veces, use <strong>Eliminar todas (nube)</strong> o borre cada fila.
       </p>
       <div class="kpi-grid">
         <div class="kpi-card"><div class="label">Abiertas</div><div class="value" id="kpiOpenOrders">0</div></div>
@@ -2038,6 +2039,7 @@ const ITAD_DEVICES_TABLE = 'itad_devices';
 const ITAD_TEST_RUNS_TABLE = 'itad_test_runs';
 const ITAD_TEST_RUN_ASSETS_TABLE = 'itad_test_run_assets';
 const ITAD_PRESENCE_TABLE = 'itad_order_presence';
+const ITAD_TOMBSTONES_TABLE = 'itad_lab_order_tombstones';
 const ITAD_SESSION_KEY = 'itad_lab_session_v1';
 let itadSupabaseSyncTimer = null;
 let itadPresenceTimer = null;
@@ -2092,6 +2094,7 @@ class ItadSupabaseHub {
     this.bucketPdfs = localStorage.getItem('itad_sb_bpdf') || 'itad-pdfs';
     this.client = null;
     this.lastProbe = null;
+    this.cloudTombstoneIds = new Set();
     this.initClient();
   }
 
@@ -2112,6 +2115,34 @@ class ItadSupabaseHub {
         console.error('Error inicializando Supabase:', e);
       }
     }
+  }
+
+  isTombstoned(labOrderId) {
+    return this.cloudTombstoneIds.has(labOrderId);
+  }
+
+  async refreshCloudTombstones() {
+    if (!this.client) return { ok: false, error: 'Sin Supabase' };
+    const { data, error } = await this.client.from(ITAD_TOMBSTONES_TABLE).select('lab_order_id');
+    if (error) return { ok: false, error: error.message };
+    this.cloudTombstoneIds = new Set((data || []).map(r => r.lab_order_id));
+    return { ok: true, count: this.cloudTombstoneIds.size };
+  }
+
+  async registerLabOrderTombstone(labOrderId) {
+    if (!this.client || !labOrderId) return { ok: false };
+    const sess = getLabSession();
+    const op = (document.getElementById('inputOperatorName')?.value || sess.operatorName || '').trim();
+    const { error } = await this.client.from(ITAD_TOMBSTONES_TABLE).upsert(
+      {
+        lab_order_id: labOrderId,
+        deleted_at: new Date().toISOString(),
+        deleted_by: op || null
+      },
+      { onConflict: 'lab_order_id' }
+    );
+    if (!error) this.cloudTombstoneIds.add(labOrderId);
+    return { ok: !error, error: error?.message };
   }
 
   isConnected() {
@@ -2283,6 +2314,10 @@ class ItadSupabaseHub {
 
   async upsertLabOrder(order) {
     if (!this.client || !order?.id) return { ok: false, error: 'Sin Supabase u orden' };
+    if (!this.cloudTombstoneIds.size) await this.refreshCloudTombstones();
+    if (this.isTombstoned(order.id)) {
+      return { ok: false, error: 'ORDER_TOMBSTONED', tombstoned: true };
+    }
     const row = this.labOrderRowFromStore(order);
     const { error } = await this.client
       .from(ITAD_LAB_ORDERS_TABLE)
@@ -2294,18 +2329,26 @@ class ItadSupabaseHub {
   }
 
   async syncAllLabOrders(orders) {
-    if (!this.client) return { ok: false, error: 'Sin Supabase', synced: 0, assets: 0 };
+    if (!this.client) return { ok: false, error: 'Sin Supabase', synced: 0, assets: 0, purged: [] };
+    await this.refreshCloudTombstones();
     let synced = 0;
     let assets = 0;
     let lastError = '';
+    const purged = [];
     for (const order of orders || []) {
+      if (this.isTombstoned(order.id)) {
+        purged.push(order.id);
+        continue;
+      }
       const res = await this.upsertLabOrder(order);
       if (res.ok) {
         synced += 1;
         assets += res.assets || 0;
+      } else if (res.tombstoned) {
+        purged.push(order.id);
       } else lastError = res.error;
     }
-    return { ok: synced > 0 || !(orders || []).length, synced, assets, error: lastError };
+    return { ok: synced > 0 || !(orders || []).length, synced, assets, error: lastError, purged };
   }
 
   cloudRowToLocalOrder(row) {
@@ -2356,6 +2399,8 @@ class ItadSupabaseHub {
 
   async deleteLabOrderFromCloud(labOrderId) {
     if (!this.client || !labOrderId) return { ok: false };
+    const tomb = await this.registerLabOrderTombstone(labOrderId);
+    if (!tomb.ok) return { ok: false, error: tomb.error || 'No se pudo registrar borrado en nube' };
     await this.client.from(ITAD_PRESENCE_TABLE).delete().eq('lab_order_id', labOrderId);
     await this.client.from(ITAD_TEST_RUNS_TABLE).delete().eq('lab_order_id', labOrderId);
     const { error } = await this.client.from(ITAD_LAB_ORDERS_TABLE).delete().eq('lab_order_id', labOrderId);
@@ -2927,6 +2972,16 @@ const OrderStore = {
     return incoming;
   },
 
+  purgeLocalTombstonedOrders(hub) {
+    if (!hub) return 0;
+    const before = this.orders.length;
+    this.orders = this.orders.filter(o => !hub.isTombstoned(o.id));
+    if (this.activeOrderId && hub.isTombstoned(this.activeOrderId)) {
+      this.activeOrderId = this.orders.find(x => x.status === 'OPEN')?.id || this.orders[0]?.id || null;
+    }
+    return before - this.orders.length;
+  },
+
   async pullFromCloud({ silent = false } = {}) {
     const hub = getItadSupabaseHub();
     if (!hub.isConnected()) {
@@ -2934,12 +2989,15 @@ const OrderStore = {
       return { ok: false };
     }
     this.persistActive();
+    await hub.refreshCloudTombstones();
     const res = await hub.fetchLabOrdersFromCloud({ includeClosed: true });
     if (!res.ok) {
       if (!silent) UIFeedback.toast(res.error || 'Error al leer nube', 'danger');
       return res;
     }
-    const added = this.mergeCloudRows(res.rows);
+    const rows = (res.rows || []).filter(r => !hub.isTombstoned(r.lab_order_id));
+    const purged = this.purgeLocalTombstonedOrders(hub);
+    const added = this.mergeCloudRows(rows);
     this.saveAll({ skipCloud: true });
     const active = this.orders.find(o => o.id === this.activeOrderId);
     this.applyToAppState(active || null);
@@ -2951,14 +3009,13 @@ const OrderStore = {
       UI.updateOpenOrdersBadge();
     }
     if (!silent) {
-      UIFeedback.toast(
-        res.rows.length
-          ? `Nube: ${res.rows.length} orden(es) · ${added} nueva(s) en este dispositivo`
-          : 'Nube: sin órdenes aún',
-        'info'
-      );
+      let msg = rows.length
+        ? `Nube: ${rows.length} orden(es) · ${added} nueva(s) en este dispositivo`
+        : 'Nube: sin órdenes aún';
+      if (purged) msg += ` · ${purged} quitada(s) (borradas en otro equipo)`;
+      UIFeedback.toast(msg, 'info');
     }
-    return { ok: true, count: res.rows.length, added };
+    return { ok: true, count: rows.length, added, purged };
   },
 
   loadAll() {
@@ -3095,6 +3152,21 @@ const OrderStore = {
     return await hub.deleteLabOrderFromCloud(orderId);
   },
 
+  async deleteAllOpenOrders() {
+    const ids = this.listOpen().map(o => o.id);
+    let ok = 0;
+    let fail = 0;
+    for (const id of ids) {
+      const res = await this.deleteOrder(id);
+      if (res.ok && !res.localOnly) ok += 1;
+      else if (res.localOnly) ok += 1;
+      else fail += 1;
+    }
+    const hub = getItadSupabaseHub();
+    if (hub.isConnected()) await this.pullFromCloud({ silent: true });
+    return { ok: fail === 0, deleted: ids.length, fail };
+  },
+
   listOpen() {
     return this.orders.filter(o => o.status !== 'CLOSED');
   },
@@ -3149,6 +3221,22 @@ async function flushOrdersToCloud() {
   const hub = getItadSupabaseHub();
   if (!hub.isConnected()) return;
   const res = await hub.syncAllLabOrders(OrderStore.orders);
+  if (res.purged?.length) {
+    const gone = new Set(res.purged);
+    OrderStore.orders = OrderStore.orders.filter(o => !gone.has(o.id));
+    if (OrderStore.activeOrderId && gone.has(OrderStore.activeOrderId)) {
+      OrderStore.activeOrderId = OrderStore.orders.find(x => x.status === 'OPEN')?.id || null;
+      const next = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
+      OrderStore.applyToAppState(next || null);
+    }
+    OrderStore.saveAll({ skipCloud: true });
+    if (typeof UI !== 'undefined') {
+      UI.renderReceptionOrderSelector();
+      UI.renderOpenOrdersList();
+      UI.renderReceptionTable();
+      UI.renderWorkflowChrome();
+    }
+  }
   if (res.ok) {
     for (const o of OrderStore.orders) {
       o.cloudSynced = true;
@@ -3912,6 +4000,32 @@ const UI = {
     document.getElementById('btnRefreshOrdersList').onclick = async () => {
       await OrderStore.pullFromCloud({ silent: false });
     };
+    document.getElementById('btnDeleteAllOpenOrders').onclick = () => {
+      const n = OrderStore.listOpen().length;
+      if (!n) {
+        UIFeedback.toast('No hay órdenes abiertas', 'info');
+        return;
+      }
+      UIFeedback.modal({
+        title: 'Eliminar todas las órdenes abiertas',
+        message: `¿Borrar ${n} orden(es) en este dispositivo y en Supabase?\n\nLAB-PC y teléfonos las quitarán al sincronizar. No se puede deshacer.`,
+        onConfirm: async () => {
+          const res = await OrderStore.deleteAllOpenOrders();
+          document.getElementById('scanResultArea').innerHTML = '';
+          UI.renderOpenOrdersList();
+          UI.renderReceptionOrderSelector();
+          UI.renderReceptionTable();
+          UI.renderWipingTable();
+          UI.renderWorkflowChrome();
+          UIFeedback.toast(
+            res.ok
+              ? `${res.deleted} orden(es) eliminada(s) en Supabase`
+              : `Eliminadas con ${res.fail} error(es) en nube — revise conexión`,
+            res.ok ? 'success' : 'warning'
+          );
+        }
+      });
+    };
     document.getElementById('btnGoLoadNewOrder').onclick = () => {
       UI.showModule('tab-reception');
       UIFeedback.toast('Use «Cargar Orden» — cada Excel crea una recepción nueva', 'info');
@@ -4017,7 +4131,11 @@ const UI = {
         if (del.localOnly) {
           UIFeedback.toast('Orden eliminada (solo local — sin Supabase)', 'warning');
         } else if (del.ok) {
-          UIFeedback.toast('Orden eliminada de este dispositivo y Supabase', 'success');
+          await OrderStore.pullFromCloud({ silent: true });
+          UIFeedback.toast(
+            'Orden eliminada en Supabase. En otros equipos desaparece al sincronizar (~25 s).',
+            'success'
+          );
         } else {
           UIFeedback.toast(`Eliminada local; Supabase: ${del.error || 'error'}`, 'warning');
         }
@@ -5774,7 +5892,7 @@ const UI = {
       } else if (!del.ok) {
         UIFeedback.toast(`Borrado local OK; nube: ${del.error || 'error'}`, 'warning');
       } else {
-        cloudMsg = ' · eliminada en Supabase';
+        cloudMsg = ' · Supabase (otros equipos ~25 s)';
         await OrderStore.pullFromCloud({ silent: true });
       }
     } else {
@@ -5787,7 +5905,10 @@ const UI = {
     UI.renderReceptionTable();
     UI.renderWipingTable();
     UI.updateOpenOrdersBadge();
-    UIFeedback.toast(`Orden activa eliminada${cloudMsg}`, del?.ok ? 'success' : 'info');
+    const openLeft = OrderStore.listOpen().length;
+    let toast = `Orden activa eliminada${cloudMsg}`;
+    if (openLeft > 0) toast += `. Quedan ${openLeft} en lista — elimine duplicados en Órdenes abiertas.`;
+    UIFeedback.toast(toast, del?.ok ? 'success' : 'info');
   },
 
   generateServiceLoadOrderPdf() {
