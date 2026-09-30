@@ -1,0 +1,9 @@
+{
+  "name": "itad-core",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ITAD Core — recepción, custodia y certificación (static)",
+  "scripts": {
+    "build": "node scripts/generate-itad-env.js"
+  }
+}

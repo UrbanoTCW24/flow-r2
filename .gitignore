@@ -1,0 +1,7 @@
+itad-config.local.json
+.env
+.env.local
+.env*.local
+node_modules/
+.vercel/
+*.log

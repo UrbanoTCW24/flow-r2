@@ -1,0 +1,4119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ITAD Core · Custodia, Sanitización y Certificación</title>
+
+<!-- Bibliotecas de Producción: PDF, Excel, ZIP, ZXing Barcode y Supabase SDK -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="/itad-env.js"></script>
+
+<style>
+:root {
+  --bg-primary: #0f141c;
+  --bg-surface: #181f2a;
+  --bg-subtle: #222b3a;
+  --border: #313d4f;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --success: #10b981;
+  --success-bg: rgba(16, 185, 129, 0.14);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.14);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.14);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f1f5f9;
+  --border: #cbd5e1;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --success: #059669;
+  --success-bg: #ecfdf5;
+  --warning: #d97706;
+  --warning-bg: #fffbeb;
+  --danger: #dc2626;
+  --danger-bg: #fef2f2;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+header {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+.header-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: none;
+  margin: 0;
+  padding: 0 4px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand-badge {
+  background: var(--primary);
+  color: #ffffff;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+h1 { font-size: 16px; margin: 0; font-weight: 700; }
+.cloud-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+.cloud-pill:hover { border-color: var(--primary); }
+.status-indicator {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+.status-indicator.online {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.app-shell {
+  display: flex;
+  min-height: calc(100dvh - 53px);
+}
+.sidebar {
+  width: 252px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  padding: 14px 12px;
+  position: sticky;
+  top: 53px;
+  align-self: flex-start;
+  max-height: calc(100dvh - 53px);
+  overflow-y: auto;
+}
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin: 0 0 10px 4px;
+}
+.sidebar-order-chip {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+.sidebar-order-chip .tc { font-family: var(--font-mono); font-weight: 800; color: var(--primary); font-size: 13px; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 6px; }
+.sidebar-nav button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text-muted);
+  padding: 11px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.15s;
+}
+.sidebar-nav button .step-num {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.sidebar-nav button.active {
+  color: var(--primary);
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.08);
+}
+.sidebar-nav button.done .step-num {
+  background: var(--success-bg);
+  border-color: var(--success);
+  color: var(--success);
+}
+.sidebar-nav button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sidebar-nav button.sidebar-utility {
+  margin-bottom: 10px;
+  border: 1px dashed var(--border);
+}
+.sidebar-nav button.sidebar-utility .step-num {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.email-preview {
+  background: #ffffff;
+  color: #1e293b;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.email-preview .ep-purple { color: #5b21b6; font-weight: 800; font-size: 15px; }
+.email-preview .ep-red { color: #dc2626; font-weight: 800; }
+.email-preview .ep-underline { text-decoration: underline; }
+.email-preview ul { margin: 8px 0 12px 18px; padding: 0; }
+.email-preview h3 { margin: 14px 0 8px; font-size: 13px; }
+.main-area { flex: 1; min-width: 0; }
+.phase-banner {
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+.phase-banner strong { color: var(--text-main); }
+.phase-actions {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+@media (max-width: 860px) {
+  .app-shell { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    position: relative;
+    top: 0;
+    max-height: none;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar-nav button { flex: 1 1 calc(50% - 6px); font-size: 12px; padding: 10px 8px; }
+}
+.section { display: none; }
+.section.active { display: block; animation: fadeIn 0.2s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.card-header h2 {
+  font-size: 14px;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease-in-out;
+  text-decoration: none;
+}
+.btn-primary { background: var(--primary); color: #ffffff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-secondary { background: var(--bg-subtle); color: var(--text-main); border-color: var(--border); }
+.btn-secondary:hover { border-color: var(--primary); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-large { width: 100%; padding: 15px; font-size: 15px; }
+.btn-small { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+input[type="text"], input[type="search"], select, textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-main);
+  font-size: 13.5px;
+  outline: none;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+input:placeholder-shown, textarea:placeholder-shown {
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+input:not(:placeholder-shown), textarea:not(:placeholder-shown) {
+  color: var(--text-main);
+  font-weight: 500;
+}
+input[type="file"] { display: none; }
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.kpi-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.kpi-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; }
+.kpi-card .value { font-size: 22px; font-weight: 800; font-family: var(--font-mono); margin-top: 2px; }
+
+.table-container {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 460px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  text-align: left;
+}
+th, td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.badge-success { background: var(--success-bg); color: var(--success); }
+.badge-warning { background: var(--warning-bg); color: var(--warning); }
+.badge-danger { background: var(--danger-bg); color: var(--danger); }
+.badge-muted { background: var(--bg-subtle); color: var(--text-muted); }
+
+canvas.signature-pad {
+  width: 100%;
+  height: 150px;
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1.5px dashed var(--border);
+  touch-action: none;
+}
+
+.photo-preview {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.code-mono { font-family: var(--font-mono); }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
+}
+.modal-overlay.hidden { display: none; }
+.modal-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  max-width: 520px;
+  width: 100%;
+  padding: 22px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 110;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 12px 18px;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: slideIn 0.25s ease-out;
+}
+@keyframes slideIn { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-container">
+    <div class="brand">
+      <span class="brand-badge">ITAD CORE</span>
+      <h1>Custodia, Sanitización &amp; Certificación</h1>
+    </div>
+    <div class="cloud-pill" id="btnCloudConfig">
+      <span class="status-indicator" id="cloudIndicator"></span>
+      <span id="cloudLabel">Supabase S3 Storage</span>
+    </div>
+  </div>
+</header>
+
+<div class="app-shell">
+<aside class="sidebar">
+  <p class="sidebar-title">Orden por fases</p>
+  <div class="sidebar-order-chip" id="sidebarOrderChip">
+    <div style="color:var(--text-muted);margin-bottom:4px;">Sin orden activa</div>
+    <div class="tc">—</div>
+    <div id="sidebarPhaseLabel" style="margin-top:6px;font-size:11px;color:var(--text-muted);">Cargue Excel en Recepción</div>
+  </div>
+  <nav class="sidebar-nav" id="sidebarNav">
+    <button type="button" data-module="tab-order-create" data-phase="CREATE" class="sidebar-utility">
+      <span class="step-num">✉</span> Creación de Orden
+    </button>
+    <button type="button" data-module="tab-orders-open" data-phase="ORDERS" class="sidebar-utility">
+      <span class="step-num" id="openOrdersCount">0</span> Órdenes abiertas
+    </button>
+    <button type="button" data-module="tab-reception" data-phase="RECEPTION" class="active">
+      <span class="step-num">1</span> Recepción
+    </button>
+    <button type="button" data-module="tab-wiping" data-phase="WIPING" disabled>
+      <span class="step-num">2</span> Borrado y diagnóstico
+    </button>
+    <button type="button" data-module="tab-reconciliation" data-phase="RECONCILIATION" disabled>
+      <span class="step-num">3</span> Conciliación
+    </button>
+    <button type="button" data-module="tab-finished" data-phase="FINISHED" disabled>
+      <span class="step-num">4</span> Finalizado / Recompra
+    </button>
+  </nav>
+</aside>
+
+<div class="main-area">
+<div class="phase-banner" id="phaseBanner">
+  <span>Fase actual: <strong id="phaseBannerText">Recepción</strong></span>
+  <span id="phaseBannerHint" style="font-size:11px;">Cargue la orden para iniciar el flujo</span>
+</div>
+
+<main>
+  <!-- ÓRDENES ABIERTAS (multi-recepción) -->
+  <section id="tab-orders-open" class="section">
+    <div class="card">
+      <div class="card-header">
+        <h2>Órdenes de recepción abiertas</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-primary btn-small" id="btnGoLoadNewOrder">＋ Cargar nueva orden (Excel)</button>
+          <button type="button" class="btn btn-secondary btn-small" id="btnRefreshOrdersList">↻ Actualizar</button>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+        Puede tener varias recepciones en paralelo. Seleccione cuál trabajar; el resto queda guardada en este navegador.
+      </p>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="label">Abiertas</div><div class="value" id="kpiOpenOrders">0</div></div>
+        <div class="kpi-card"><div class="label">Orden activa</div><div class="value" style="font-size:13px;" id="kpiActiveOrderLabel">—</div></div>
+      </div>
+      <div class="table-container" style="margin-top:12px;">
+        <table id="tableOpenOrders">
+          <thead>
+            <tr>
+              <th>Activa</th>
+              <th>ID / TC</th>
+              <th>Cliente</th>
+              <th>Proyecto</th>
+              <th>Equipos</th>
+              <th>Recibidos</th>
+              <th>Fase</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- CREACIÓN DE ORDEN — correo a operaciones -->
+  <section id="tab-order-create" class="section">
+    <div class="card">
+      <div class="card-header">
+        <h2>Creación de Orden — Notificación ITAD Service</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary btn-small" id="btnOrderCreatePrefill">↻ Desde orden cargada</button>
+          <button type="button" class="btn btn-secondary btn-small" id="btnOrderCreatePreview">Vista previa</button>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px;">
+        <strong>Fuente única:</strong> el cuadro de abajo (pegar correo o foto). Todos los campos del formulario se llenan <em>solo</em> desde ese texto — luego puede editarlos a mano.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:16px;padding:14px;background:var(--bg-subtle);border-radius:10px;border:1px solid var(--border);">
+        <div style="grid-column:1/-1;">
+          <label style="font-size:12px;color:var(--text-muted);font-weight:700;">Importar desde correo (texto)</label>
+          <textarea id="orderCreateImportText" rows="6" placeholder="Pegue aquí el cuerpo del correo ITAD (Outlook, Gmail, WhatsApp)…" style="margin-top:6px;font-size:12.5px;"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button type="button" class="btn btn-secondary btn-small" id="btnOrderCreatePasteClipboard">📋 Pegar portapapeles</button>
+          <button type="button" class="btn btn-primary btn-small" id="btnOrderCreateParseText">⚡ Llenar formulario</button>
+          <label class="btn btn-secondary btn-small" for="inputOrderCreatePhoto">📷 Foto / captura</label>
+          <input type="file" id="inputOrderCreatePhoto" accept="image/*" capture="environment">
+        </div>
+        <div id="orderCreateOcrStatus" style="grid-column:1/-1;font-size:12px;color:var(--text-muted);display:none;"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Nombre destinatario (Hola …)</label>
+          <input type="text" id="orderCreateRecipientName" placeholder="Ej. Alex" autocomplete="off">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Correo destinatario</label>
+          <input type="email" id="orderCreateRecipientEmail" placeholder="operaciones@ejemplo.com" autocomplete="off">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Project Order #</label>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <input type="text" id="orderCreateProjectOrder" placeholder="Ej. ORD26580" class="code-mono" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-small" id="btnOrderCreateFetchSupabase" title="Traer memo guardado en Supabase">☁ ORD</button>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">PO / referencia</label>
+          <input type="text" id="orderCreatePoReference" placeholder="Ej. PO 3093 BTR">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Ciudad, país</label>
+          <input type="text" id="orderCreateCityCountry" placeholder="Guatemala City, Guatemala">
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:12px;color:var(--text-muted)">Día de recolección</label>
+          <input type="text" id="orderCreateCollectionDay" placeholder="Martes 11 de Agosto de 2026 a la 9:00 AM">
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:12px;color:var(--text-muted)">Dirección (sitio de recolección)</label>
+          <textarea id="orderCreateAddress" rows="2" placeholder="The World Technology Center (WTC) 5A Avenue 5-55, Zone 14…"></textarea>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Nombre completo contacto cliente</label>
+          <input type="text" id="orderCreateContactName" placeholder="Yonatan Barrios">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Teléfono contacto</label>
+          <input type="tel" id="orderCreateContactPhone" placeholder="41193680" inputmode="tel">
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:12px;color:var(--text-muted)">Lista y descripción de equipos (una línea = un bullet)</label>
+          <textarea id="orderCreateEquipmentList" rows="3" placeholder="90 Laptops"></textarea>
+        </div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="btn btn-primary" id="btnOrderCreateXsiTc">🏷 Crear Orden de Servicios XSI International (TC)</button>
+        <span class="badge badge-success" id="orderCreateTcBadge" style="display:none;"></span>
+        <button type="button" class="btn btn-secondary" id="btnOrderCreateSendEmail">📧 Enviar correo</button>
+        <button type="button" class="btn btn-secondary" id="btnOrderCreateCopy">📋 Copiar texto</button>
+      </div>
+      <p style="font-size:11px;color:var(--text-muted);margin:10px 0 0;">
+        El botón TC asigna <strong>TC-GT-N</strong>, registra la orden abierta (sin Excel aún) y descarga el PDF de servicios XS International.
+      </p>
+    </div>
+    <div class="card">
+      <div class="card-header"><h2>Vista previa del correo</h2></div>
+      <div class="email-preview" id="orderCreateEmailPreview">
+        <span style="color:#64748b;">Pulse «Vista previa» o edite los campos…</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 1: RECEPCIÓN EN SITIO -->
+  <section id="tab-reception" class="section active">
+    <!-- Carga de Orden Excel -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Orden de Recolección (Receipt of Equipment)</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <label class="btn btn-secondary btn-small" for="inputOrderExcel">📂 Cargar Orden (.xlsx / .xls)</label>
+          <button type="button" class="btn btn-danger btn-small" id="btnClearOrderInventory" disabled>🗑 Eliminar inventario</button>
+          <button type="button" class="btn btn-primary btn-small" id="btnGenerateServiceOrder" disabled>📋 Orden de carga TC</button>
+          <span class="badge badge-muted" id="serviceOrderBadge" style="display:none;"></span>
+          <button type="button" class="btn btn-secondary btn-small" id="btnResetSession">Nueva Sesión</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 12px;background:var(--bg-subtle);border-radius:8px;border:1px solid var(--border);">
+        <label for="selectReceptionOpenOrder" style="font-size:12px;color:var(--text-muted);font-weight:700;white-space:nowrap;">Orden de trabajo:</label>
+        <select id="selectReceptionOpenOrder" style="flex:1;min-width:220px;max-width:480px;"></select>
+        <button type="button" class="btn btn-secondary btn-small" id="btnReceptionRefreshOrders" title="Actualizar lista">↻</button>
+        <button type="button" class="btn btn-secondary btn-small" id="btnReceptionGoOrdersModule">Ver todas</button>
+      </div>
+      <p id="receptionOrderHint" style="font-size:11px;color:var(--text-muted);margin:0 0 10px;">
+        Elija la orden (TC) creada en «Creación de Orden» o una abierta; luego cargue el Excel de series para esa orden.
+      </p>
+      <input type="file" id="inputOrderExcel" accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <div id="orderMetaDisplay" style="color:var(--text-muted);font-size:12px;">
+        Cargue la orden del cliente para validar estrictamente las series autorizadas.
+      </div>
+      
+      <div class="kpi-grid" style="margin-top:12px;">
+        <div class="kpi-card"><div class="label">Total Orden</div><div class="value" id="kpiTotalOrder">0</div></div>
+        <div class="kpi-card"><div class="label">Recibidos</div><div class="value" style="color:var(--success)" id="kpiReceived">0</div></div>
+        <div class="kpi-card"><div class="label">Pendientes</div><div class="value" style="color:var(--warning)" id="kpiPending">0</div></div>
+        <div class="kpi-card"><div class="label">Fotos en S3</div><div class="value" style="color:var(--primary)" id="kpiPhotos">0</div></div>
+      </div>
+    </div>
+
+    <!-- Escaneo & Validación Óptica -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Validar Activo (Cámara o Entrada Manual)</h2>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:12px;">
+        <label class="btn btn-primary btn-large" style="flex:1;" for="inputCameraBarcode">
+          📷 Escanear Etiqueta / Código de Barras
+        </label>
+        <input type="file" id="inputCameraBarcode" accept="image/*" capture="environment">
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="inputManualSerial" placeholder="Escriba o pegue serie (Ej. 6QV6PQ3 o PF-3AG4Y9)" class="code-mono" autocapitalize="characters">
+        <button class="btn btn-secondary" id="btnValidateManual">Verificar</button>
+      </div>
+
+      <div id="scanResultArea" style="margin-top:12px;"></div>
+      <!-- Selector para captura de foto estética comprimida -->
+      <input type="file" id="inputCameraCosmetic" accept="image/*" capture="environment">
+    </div>
+
+    <!-- Tabla de Equipos en Orden -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Inventario en Orden</h2>
+        <div style="display:flex;gap:8px;">
+          <input type="search" id="searchTable" placeholder="Filtrar serie o modelo..." style="max-width:210px;">
+          <select id="filterStatus" style="width:auto;">
+            <option value="ALL">Todos</option>
+            <option value="RECEIVED">Recibidos</option>
+            <option value="PENDING">Pendientes</option>
+            <option value="NO_PHOTO">Sin Foto Estética</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-container">
+        <table id="tableReception">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Serie</th>
+              <th>Marca / Modelo</th>
+              <th>Estado</th>
+              <th>Foto S3</th>
+              <th>Condición Estética</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Firmas, Custodia y Acta Oficial -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Cierre de Recepción &amp; Custodia Legal</h2>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:16px;">
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Nombre Representante Cliente</label>
+          <input type="text" id="signerClientName" placeholder="Nombre completo" autocomplete="off">
+          <label style="font-size:12px;color:var(--text-muted);margin-top:8px;display:block;">DPI (13 dígitos)</label>
+          <input type="text" id="signerClientDpi" placeholder="0000 00000 0000" maxlength="15" inputmode="numeric">
+          <label style="font-size:12px;color:var(--text-muted);margin-top:8px;display:block;">Firma del Cliente en Pantalla</label>
+          <canvas class="signature-pad" id="padClient"></canvas>
+          <button class="btn btn-secondary btn-small" id="btnClearClientPad" style="margin-top:6px;">Limpiar Firma</button>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text-muted)">Técnico Responsable XS International</label>
+          <input type="text" id="signerXsiName" placeholder="Nombre del técnico" autocomplete="off">
+          <label style="font-size:12px;color:var(--text-muted);margin-top:8px;display:block;">DPI Técnico (13 dígitos)</label>
+          <input type="text" id="signerXsiDpi" placeholder="0000 00000 0000" maxlength="15" inputmode="numeric">
+          <label style="font-size:12px;color:var(--text-muted);margin-top:8px;display:block;">Firma del Técnico en Pantalla</label>
+          <canvas class="signature-pad" id="padXsi"></canvas>
+          <button type="button" class="btn btn-secondary btn-small" id="btnClearXsiPad" style="margin-top:6px;">Limpiar Firma</button>
+          <label style="font-size:12px;color:var(--text-muted);margin-top:12px;display:block;">Comentarios de la Recolección</label>
+          <textarea id="receptionNotes" rows="3" placeholder="Observaciones de entrega física, faltantes de cargadores, estado de embalaje..."></textarea>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button class="btn btn-primary" id="btnGenerateActaPdf" style="flex:1;">📄 Descargar Acta Oficial (PDF)</button>
+        <button class="btn btn-secondary" id="btnShareActa">📤 Compartir Acta</button>
+      </div>
+      <div class="phase-actions">
+        <span style="font-size:12px;color:var(--text-muted);margin-right:auto;">Al cerrar recepción, la orden pasa a Borrado y diagnóstico.</span>
+        <button type="button" class="btn btn-primary" id="btnCompleteReception" disabled>Completar recepción →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: SANITIZACIÓN & BLANCCO -->
+  <section id="tab-wiping" class="section">
+    <div class="card">
+      <div class="card-header">
+        <h2>Reportes de Sanitización (Blancco XML/PDF)</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="selectBatchSize" style="width:auto;font-size:12px;padding:6px 10px;">
+            <option value="10">Lotes de 10</option>
+            <option value="15" selected>Lotes de 15</option>
+            <option value="20">Lotes de 20</option>
+            <option value="25">Lotes de 25</option>
+          </select>
+          <label class="btn btn-primary btn-small" for="inputBlanccoPdfs">Subir PDFs por Lote</label>
+        </div>
+      </div>
+      <input type="file" id="inputBlanccoPdfs" accept="application/pdf" multiple>
+      <div style="font-size:12px;color:var(--text-muted)">
+        Los PDFs se procesan en el navegador extrayendo CPU, RAM, batería y discos HDD #1 / HDD #2. Los archivos se transfieren directamente al bucket <code>itad-pdfs</code> en Supabase con el nombre <code>[SERIE].pdf</code>.
+      </div>
+      
+      <div id="uploadProgressBar" style="display:none;margin-top:12px;height:8px;background:var(--bg-subtle);border-radius:4px;overflow:hidden;">
+        <div id="uploadProgressFill" style="width:0%;height:100%;background:var(--primary);transition:width 0.2s;"></div>
+      </div>
+
+      <div class="kpi-grid" style="margin-top:14px;">
+        <div class="kpi-card"><div class="label">PDFs Leídos</div><div class="value" id="kpiPdfCount">0</div></div>
+        <div class="kpi-card"><div class="label">Borrados (Wipe Sí)</div><div class="value" style="color:var(--success)" id="kpiWipeOk">0</div></div>
+        <div class="kpi-card"><div class="label">Fallidos (Wipe No)</div><div class="value" style="color:var(--danger)" id="kpiWipeFail">0</div></div>
+        <div class="kpi-card"><div class="label">Guardados en S3</div><div class="value" style="color:var(--primary)" id="kpiPdfUploaded">0</div></div>
+      </div>
+    </div>
+
+    <!-- Registro de Destrucción / No Power On -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Equipos Sin Encendido (No Power On / Destrucción Física)</h2>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+        Para activos que no encienden o no bootean Blancco. Se registran con disco <code>Wipe = No / Destruction = Yes</code> y estado <code>Spare</code>.
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:8px;">
+        <select id="selectNoPowerAsset"><option value="">Seleccione equipo recibido...</option></select>
+        <input type="text" id="inputNoPowerHdd" placeholder="Serie Disco HDD/SSD" class="code-mono">
+        <input type="text" id="inputNoPowerSize" placeholder="Capacidad (ej. 512GB)">
+        <button class="btn btn-secondary" id="btnAddNoPowerRecord">Registrar Destrucción</button>
+      </div>
+    </div>
+
+    <!-- Detalle de Lote Blancco -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Auditoría de Sanitización por Serie</h2>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary btn-small" id="btnDownloadRenamedZip">📦 Descargar ZIP Renombrados</button>
+        </div>
+      </div>
+      <div class="table-container">
+        <table id="tableWiping">
+          <thead>
+            <tr>
+              <th>Serie Equipo</th>
+              <th>Modelo Extraído</th>
+              <th>Serie Disco</th>
+              <th>Capacidad</th>
+              <th>Wipe</th>
+              <th>Destrucción</th>
+              <th>Batería</th>
+              <th>S3 Sync</th>
+              <th>PDF</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="phase-actions">
+        <span style="font-size:12px;color:var(--text-muted);margin-right:auto;">Confirme borrado/diagnóstico antes de conciliar.</span>
+        <button type="button" class="btn btn-primary" id="btnCompleteWiping" disabled>Completar borrado →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- FASE 3: CONCILIACIÓN -->
+  <section id="tab-reconciliation" class="section">
+    <div class="card">
+      <div class="card-header">
+        <h2>Libro Oficial ITAD (Asset Report &amp; Testing Log)</h2>
+        <button class="btn btn-primary" id="btnExportItadExcel">⬇ Descargar Excel Diligenciado</button>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+        Estructura exacta: Especificaciones (B-M), Resultados de Prueba (N-X) y Tabla detallada de HDD #1 y HDD #2 (Z-AG).
+      </div>
+      <div class="table-container">
+        <table id="tablePreviewExcel">
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>Make</th>
+              <th>Model</th>
+              <th>Serial Number</th>
+              <th>Asset Tag#</th>
+              <th>CPU / Processor</th>
+              <th>RAM</th>
+              <th>Battery</th>
+              <th>Final Status</th>
+              <th>HDD #1 Serial</th>
+              <th>HDD #1 Wipe</th>
+              <th>HDD #1 Destruction</th>
+              <th>HDD #2 Serial</th>
+              <th>HDD #2 Wipe</th>
+              <th>HDD #2 Destruction</th>
+              <th>Comments</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Conciliación y Discrepancias -->
+    <div class="card">
+      <div class="card-header">
+        <h2>Conciliación Cruzada de Series</h2>
+        <button class="btn btn-secondary btn-small" id="btnExportConciliationCsv">Exportar CSV</button>
+      </div>
+      <div id="conciliationAlerts"></div>
+      <div class="phase-actions">
+        <span style="font-size:12px;color:var(--text-muted);margin-right:auto;">Revise discrepancias antes del cierre comercial.</span>
+        <button type="button" class="btn btn-primary" id="btnCompleteReconciliation" disabled>Completar conciliación →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- FASE 4: FINALIZADO / RECOMPRA -->
+  <section id="tab-finished" class="section">
+    <div class="card">
+      <div class="card-header">
+        <h2>Cierre comercial — Finalizado / Recompra</h2>
+        <button class="btn btn-primary" id="btnExportItadExcelFinished">⬇ Excel ITAD final</button>
+      </div>
+      <div class="kpi-grid">
+        <div class="kpi-card"><div class="label">Remarketing</div><div class="value" style="color:var(--success)" id="kpiRemarketing">0</div></div>
+        <div class="kpi-card"><div class="label">Spare / Chatarra</div><div class="value" style="color:var(--warning)" id="kpiSpare">0</div></div>
+        <div class="kpi-card"><div class="label">Valor recompra est.</div><div class="value" id="kpiRepurchaseValue">$0</div></div>
+        <div class="kpi-card"><div class="label">Estado orden</div><div class="value" style="font-size:14px;" id="kpiOrderClosed">Abierta</div></div>
+      </div>
+      <div class="table-container" style="margin-top:12px;">
+        <table id="tableFinished">
+          <thead>
+            <tr>
+              <th>Serie</th>
+              <th>Modelo</th>
+              <th>Estado final</th>
+              <th>Precio recompra</th>
+              <th>Fee servicio</th>
+              <th>Wipe</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="phase-actions">
+        <button type="button" class="btn btn-secondary" id="btnReopenOrder">↩ Reabrir en conciliación</button>
+        <button type="button" class="btn btn-primary" id="btnCloseOrder">✓ Marcar orden finalizada</button>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+</div>
+
+<!-- Modales -->
+<div class="modal-overlay hidden" id="modalConfig">
+  <div class="modal-box">
+    <h3 style="margin-top:0;">Supabase — proyecto ITAD</h3>
+    <p style="font-size:12px;color:var(--text-muted)">
+      Proyecto <code>fmqtkuyefbawfpeijjnq</code>: Storage (fotos/PDF) + tabla <code>itad_order_intakes</code> para memos y órdenes TC.
+      Anon key en
+      <a href="https://supabase.com/dashboard/project/fmqtkuyefbawfpeijjnq/settings/api" target="_blank" rel="noopener">Dashboard → API</a>
+      o archivo local <code>itad-config.local.json</code> (no subir a git).
+    </p>
+    <label style="font-size:12px;color:var(--text-muted)">Project URL</label>
+    <input type="text" id="cfgSupabaseUrl" placeholder="https://fmqtkuyefbawfpeijjnq.supabase.co" style="margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted)">Anon Public Key</label>
+    <input type="text" id="cfgSupabaseKey" placeholder="eyJhbGciOiJIUzI1NiIsIn..." style="margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted)">Bucket Fotos (Por defecto: itad-photos)</label>
+    <input type="text" id="cfgBucketPhotos" value="itad-photos" style="margin-bottom:10px;">
+    <label style="font-size:12px;color:var(--text-muted)">Bucket PDFs (Por defecto: itad-pdfs)</label>
+    <input type="text" id="cfgBucketPdfs" value="itad-pdfs" style="margin-bottom:16px;">
+    <p id="cfgSupabaseStatus" style="font-size:12px;color:var(--text-muted);min-height:18px;margin:0 0 12px;"></p>
+    <p style="font-size:11px;color:var(--text-muted);margin:0 0 12px;">
+      Primera vez: ejecute <code>CONFIGURAR-SUPABASE.bat</code> en la carpeta del proyecto.
+    </p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button type="button" class="btn btn-secondary" id="btnSyncSupabaseNow">↻ Sincronizar órdenes</button>
+      <button type="button" class="btn btn-secondary" id="btnTestConfig">Probar conexión</button>
+      <button class="btn btn-secondary" id="btnCloseConfig">Cerrar</button>
+      <button class="btn btn-primary" id="btnSaveConfig">Guardar y Conectar</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="modalDialog">
+  <div class="modal-box">
+    <h3 id="modalDialogTitle" style="margin-top:0;">Confirmación</h3>
+    <p id="modalDialogMessage" style="font-size:13px;color:var(--text-muted);"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn btn-secondary" id="btnModalCancel">Cancelar</button>
+      <button class="btn btn-primary" id="btnModalConfirm">Aceptar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/**
+ * ============================================================================
+ * 1. DOMAIN LAYER (DDD - ENTITIES, VALUE OBJECTS & DOMAIN SERVICES)
+ * ============================================================================
+ */
+const Domain = (() => {
+  // Value Object: Número de Serie Normalizado
+  class SerialNumber {
+    constructor(raw) {
+      this.raw = String(raw || '').trim();
+      this.normalized = this.raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (this.normalized.length < 3) {
+        throw new Error(`Número de serie no válido: ${this.raw}`);
+      }
+    }
+    equals(other) {
+      if (!other) return false;
+      const norm = other instanceof SerialNumber ? other.normalized : String(other).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      return this.normalized === norm;
+    }
+    toString() { return this.raw; }
+  }
+
+  // Value Object: Documento Personal de Identificación (Guatemala)
+  class DpiGuatemala {
+    constructor(raw) {
+      this.digits = String(raw || '').replace(/\D/g, '').slice(0, 13);
+    }
+    isValid() { return this.digits.length === 13; }
+    formatted() {
+      if (!this.digits) return '';
+      return [this.digits.slice(0, 4), this.digits.slice(4, 9), this.digits.slice(9, 13)].filter(Boolean).join(' ');
+    }
+  }
+
+  // Entity: Dispositivo de Almacenamiento (HDD / SSD)
+  class StorageDevice {
+    constructor({ serial, size, wipeStatus, destruction, method = '', health = 'Good' }) {
+      this.serial = serial ? String(serial).trim() : '';
+      this.size = size ? String(size).trim().toUpperCase() : '';
+      this.wipeStatus = wipeStatus === 'Sí' || wipeStatus === true || String(wipeStatus).toLowerCase() === 'erased' ? 'Sí' : 'No';
+      this.destruction = destruction === 'Yes' || destruction === true || this.wipeStatus === 'No' ? 'Yes' : 'No';
+      this.method = method;
+      this.health = health;
+    }
+  }
+
+  // Aggregate Root: Activo de Hardware ITAD
+  class AssetItem {
+    constructor({ itemNo, serial, make, model, category = 'Laptop' }) {
+      this.itemNo = itemNo;
+      this.serial = new SerialNumber(serial);
+      this.make = make || 'DELL INC.';
+      this.model = model || 'Latitude 5420';
+      this.category = category;
+      this.status = 'PENDING'; // PENDING | RECEIVED
+      this.scannedAt = null;
+      this.cosmeticNote = '';
+      this.photoRef = null; // { storagePath, publicUrl, sizeBytes } (Cero Base64)
+      this.disks = [];
+      this.cpu = '';
+      this.ram = '';
+      this.batteryStatus = 'Pass'; // Pass | Fail | No Power On | without battery
+      this.finalStatus = 'Remarketing'; // Remarketing | Spare
+      this.remarketPrice = 85.5;
+      this.serviceFee = 7.0;
+      this.reportPdfRef = null; // { storagePath, publicUrl }
+    }
+
+    markReceived(via = 'manual') {
+      this.status = 'RECEIVED';
+      this.scannedAt = new Date().toISOString();
+      this.scanMethod = via;
+    }
+
+    attachPhoto(photoRef) {
+      this.photoRef = photoRef;
+    }
+
+    attachBlancco(reportData, pdfRef) {
+      this.reportPdfRef = pdfRef;
+      this.cpu = reportData.cpu || this.cpu;
+      this.ram = reportData.ram || this.ram;
+      this.batteryStatus = reportData.batteryStatus || this.batteryStatus;
+      this.disks = reportData.disks.map(d => new StorageDevice(d));
+
+      const allWiped = this.disks.length > 0 && this.disks.every(d => d.wipeStatus === 'Sí');
+      if (allWiped && this.batteryStatus !== 'Fail' && this.batteryStatus !== 'No Power On') {
+        this.finalStatus = 'Remarketing';
+        this.remarketPrice = 85.5;
+        this.serviceFee = 7.0;
+      } else {
+        this.finalStatus = 'Spare';
+        this.remarketPrice = 9.0;
+        this.serviceFee = 6.0;
+      }
+    }
+
+    markNoPowerOn(hddSerial, hddSize) {
+      this.batteryStatus = 'No Power On';
+      this.finalStatus = 'Spare';
+      this.remarketPrice = 9.0;
+      this.serviceFee = 6.0;
+      this.disks = [new StorageDevice({
+        serial: hddSerial,
+        size: hddSize,
+        wipeStatus: 'No',
+        destruction: 'Yes',
+        method: 'Physical Destruction'
+      })];
+      this.cosmeticNote = this.cosmeticNote ? `${this.cosmeticNote}. No Power On` : 'No Power On';
+    }
+  }
+
+  // Domain Service: Algoritmos de Búsqueda y Emparejamiento de Series
+  class SerialMatcher {
+    static normalize(s) {
+      return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+
+    static match(candidateTexts, orderItems) {
+      for (const text of candidateTexts) {
+        const normText = this.normalize(text);
+        if (normText.length < 4) continue;
+
+        // 1. Coincidencia Exacta
+        const exact = orderItems.find(i => i.serial.normalized === normText);
+        if (exact) return { matchType: 'EXACT', item: exact, confidence: 1.0 };
+
+        // 2. Coincidencia en Código Largo (código 2D / GS1 DataMatrix de Dell / Lenovo)
+        const embedded = orderItems.find(i => normText.includes(i.serial.normalized));
+        if (embedded) return { matchType: 'EMBEDDED', item: embedded, confidence: 0.95 };
+
+        // 3. Caso Especial Lenovo (etiqueta "PF-3AG4Y9" frente a orden "PF3AG4Y9" o "3AG4Y9")
+        const lenovo = orderItems.find(i => {
+          const s = i.serial.normalized;
+          return s.startsWith('PF') && s.length >= 8 && normText.includes(s.slice(2));
+        });
+        if (lenovo) return { matchType: 'PREFIX_LENOVO', item: lenovo, confidence: 0.88 };
+      }
+      return null;
+    }
+  }
+
+  return { SerialNumber, DpiGuatemala, StorageDevice, AssetItem, SerialMatcher };
+})();
+
+/**
+ * ============================================================================
+ * 2. INFRASTRUCTURE LAYER (HEXAGONAL ADAPTERS & PORTS)
+ * ============================================================================
+ */
+
+/** Fotos estéticas en recepción — balance etiqueta legible vs. Storage Supabase */
+const ITAD_COSMETIC_PHOTO = {
+  maxPx: 800,
+  quality: 0.52,
+  maxBytes: 180 * 1024
+};
+
+// Adaptador: Pipeline de Optimización y Compresión de Fotos en el Cliente
+class ClientImageCompressorAdapter {
+  static canvasToJpegBlob(canvas, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (!blob) return reject(new Error('Falla en compresión de imagen'));
+        resolve(blob);
+      }, 'image/jpeg', quality);
+    });
+  }
+
+  static async compressImage(file, maxDimension = 960, quality = 0.58, options = {}) {
+    const maxBytes = options.maxBytes ?? null;
+    const bitmap = await createImageBitmap(file);
+    let { width, height } = bitmap;
+
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'medium';
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    let q = quality;
+    let blob = await ClientImageCompressorAdapter.canvasToJpegBlob(canvas, q);
+    if (maxBytes) {
+      while (blob.size > maxBytes && q > 0.32) {
+        q = Math.max(0.32, q - 0.07);
+        blob = await ClientImageCompressorAdapter.canvasToJpegBlob(canvas, q);
+      }
+    }
+
+    return {
+      blob,
+      width,
+      height,
+      jpegQuality: q,
+      originalSize: file.size,
+      compressedSize: blob.size,
+      savings: ((1 - blob.size / file.size) * 100).toFixed(1) + '%'
+    };
+  }
+}
+
+const ITAD_SB_PROJECT_REF = 'fmqtkuyefbawfpeijjnq';
+const ITAD_SB_DEFAULT_URL = `https://${ITAD_SB_PROJECT_REF}.supabase.co`;
+const ITAD_ORDER_INTAKES_TABLE = 'itad_order_intakes';
+const ITAD_LAB_ORDERS_TABLE = 'itad_lab_orders';
+const ITAD_DEVICES_TABLE = 'itad_devices';
+const ITAD_TEST_RUNS_TABLE = 'itad_test_runs';
+const ITAD_TEST_RUN_ASSETS_TABLE = 'itad_test_run_assets';
+let itadSupabaseSyncTimer = null;
+
+/** Cliente único: Storage + Postgres (memos / TC) */
+class ItadSupabaseHub {
+  constructor() {
+    this.url = localStorage.getItem('itad_sb_url') || ITAD_SB_DEFAULT_URL;
+    this.key = localStorage.getItem('itad_sb_key') || '';
+    this.bucketPhotos = localStorage.getItem('itad_sb_bphoto') || 'itad-photos';
+    this.bucketPdfs = localStorage.getItem('itad_sb_bpdf') || 'itad-pdfs';
+    this.client = null;
+    this.lastProbe = null;
+    this.initClient();
+  }
+
+  reloadFromStorage() {
+    this.url = localStorage.getItem('itad_sb_url') || ITAD_SB_DEFAULT_URL;
+    this.key = localStorage.getItem('itad_sb_key') || '';
+    this.bucketPhotos = localStorage.getItem('itad_sb_bphoto') || 'itad-photos';
+    this.bucketPdfs = localStorage.getItem('itad_sb_bpdf') || 'itad-pdfs';
+    this.initClient();
+  }
+
+  initClient() {
+    this.client = null;
+    if (this.url && this.key && window.supabase) {
+      try {
+        this.client = window.supabase.createClient(this.url, this.key);
+      } catch (e) {
+        console.error('Error inicializando Supabase:', e);
+      }
+    }
+  }
+
+  isConnected() {
+    return !!this.client && !!this.key;
+  }
+
+  applyRuntimeConfig() {
+    const cfg = window.__ITAD_RUNTIME_CONFIG__;
+    if (!cfg || typeof cfg !== 'object') return false;
+    if (cfg.supabaseUrl) localStorage.setItem('itad_sb_url', String(cfg.supabaseUrl).trim());
+    if (cfg.supabaseAnonKey) localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+    if (cfg.bucketPhotos) localStorage.setItem('itad_sb_bphoto', String(cfg.bucketPhotos).trim());
+    if (cfg.bucketPdfs) localStorage.setItem('itad_sb_bpdf', String(cfg.bucketPdfs).trim());
+    this.reloadFromStorage();
+    return !!cfg.supabaseAnonKey;
+  }
+
+  async bootstrapFromLocalFile() {
+    try {
+      const res = await fetch('./itad-config.local.json', { cache: 'no-store' });
+      if (!res.ok) return false;
+      const cfg = await res.json();
+      if (cfg.supabaseUrl) localStorage.setItem('itad_sb_url', String(cfg.supabaseUrl).trim());
+      if (cfg.supabaseAnonKey) localStorage.setItem('itad_sb_key', String(cfg.supabaseAnonKey).trim());
+      if (cfg.bucketPhotos) localStorage.setItem('itad_sb_bphoto', String(cfg.bucketPhotos).trim());
+      if (cfg.bucketPdfs) localStorage.setItem('itad_sb_bpdf', String(cfg.bucketPdfs).trim());
+      this.reloadFromStorage();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async probe() {
+    if (!this.client) {
+      this.lastProbe = { ok: false, message: 'Falta la anon public key (modal ☁ o itad-config.local.json).' };
+      return this.lastProbe;
+    }
+    const { error } = await this.client.from(ITAD_ORDER_INTAKES_TABLE).select('id').limit(1);
+    if (error) {
+      const missingTable = /does not exist|schema cache|PGRST205/i.test(error.message || '');
+      this.lastProbe = missingTable
+        ? {
+            ok: true,
+            warn: true,
+            message: 'API OK. Ejecute supabase/001_itad_core.sql en SQL Editor del dashboard.'
+          }
+        : { ok: false, message: error.message };
+      return this.lastProbe;
+    }
+    const lab = await this.client.from(ITAD_LAB_ORDERS_TABLE).select('id').limit(1);
+    if (lab.error && /does not exist|PGRST205/i.test(lab.error.message || '')) {
+      this.lastProbe = { ok: true, warn: true, message: 'Conectado (falta tabla itad_lab_orders — ejecute 002_itad_lab_orders.sql)' };
+      return this.lastProbe;
+    }
+    const dev = await this.client.from(ITAD_DEVICES_TABLE).select('id').limit(1);
+    if (dev.error && /does not exist|PGRST205/i.test(dev.error.message || '')) {
+      this.lastProbe = { ok: true, warn: true, message: 'Conectado (falta 003 devices/test_runs — ver supabase/003)' };
+      return this.lastProbe;
+    }
+    this.lastProbe = { ok: true, message: 'Conectado: equipos + runs + fotos (Storage)' };
+    return this.lastProbe;
+  }
+
+  normalizeSerialForCloud(raw) {
+    try {
+      return Domain.SerialMatcher.normalize(String(raw || ''));
+    } catch {
+      return String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+  }
+
+  async syncNormalizedLabOrder(order) {
+    if (!this.client || !order?.id) return { ok: false, error: 'Sin Supabase u orden' };
+    const meta = order.orderMetadata || {};
+    const now = new Date().toISOString();
+    const runRow = {
+      lab_order_id: order.id,
+      tc_id: meta.serviceOrderId || null,
+      kind: 'reception',
+      status: order.status || 'OPEN',
+      label: order.label || null,
+      order_metadata: meta,
+      workflow: order.workflow || {},
+      country_code: meta.countryCode || 'GT',
+      updated_at: now
+    };
+    const { data: runData, error: runErr } = await this.client
+      .from(ITAD_TEST_RUNS_TABLE)
+      .upsert(runRow, { onConflict: 'lab_order_id' })
+      .select('id')
+      .single();
+    if (runErr) return { ok: false, error: runErr.message };
+
+    const testRunId = runData.id;
+    const items = order.items || [];
+    let assets = 0;
+    for (const j of items) {
+      const serialRaw = j.serial || '';
+      const serialNorm = this.normalizeSerialForCloud(serialRaw);
+      if (serialNorm.length < 4) continue;
+      const photo = j.photoRef || {};
+
+      const { error: devErr } = await this.client.from(ITAD_DEVICES_TABLE).upsert({
+        serial_normalized: serialNorm,
+        serial_raw: serialRaw,
+        vendor: j.make || null,
+        model: j.model || null,
+        category: j.category || null,
+        last_seen_at: now,
+        last_tc_id: meta.serviceOrderId || null,
+        last_lab_order_id: order.id
+      }, { onConflict: 'serial_normalized' });
+      if (devErr) return { ok: false, error: devErr.message };
+
+      const { error: assetErr } = await this.client.from(ITAD_TEST_RUN_ASSETS_TABLE).upsert({
+        test_run_id: testRunId,
+        serial_normalized: serialNorm,
+        item_no: j.itemNo ?? null,
+        vendor: j.make || null,
+        model: j.model || null,
+        category: j.category || null,
+        asset_status: j.status || 'PENDING',
+        received_at: j.scannedAt || null,
+        scan_method: j.scanMethod || null,
+        cosmetic_note: j.cosmeticNote || null,
+        photo_storage_path: photo.storagePath || null,
+        photo_public_url: photo.publicUrl || null,
+        photo_size_bytes: photo.sizeBytes ?? null,
+        disks: j.disks || [],
+        cpu: j.cpu || null,
+        ram: j.ram || null,
+        battery_status: j.batteryStatus || null,
+        final_status: j.finalStatus || null,
+        report_pdf_path: (j.reportPdfRef && j.reportPdfRef.storagePath) || null,
+        payload: j,
+        updated_at: now
+      }, { onConflict: 'test_run_id,serial_normalized' });
+      if (assetErr) return { ok: false, error: assetErr.message };
+      assets += 1;
+    }
+    return { ok: true, assets, testRunId };
+  }
+
+  labOrderRowFromStore(order) {
+    const meta = order.orderMetadata || {};
+    const blancco = (order.blanccoRecords || []).map(([k, v]) => ({ serial: k, ...v }));
+    return {
+      lab_order_id: order.id,
+      tc_id: meta.serviceOrderId || null,
+      client_project_order: meta.clientProjectOrder || null,
+      po_reference: meta.poReference || null,
+      status: order.status || 'OPEN',
+      label: order.label || null,
+      order_metadata: meta,
+      items: order.items || [],
+      workflow: order.workflow || {},
+      blancco_meta: blancco,
+      country_code: meta.countryCode || 'GT',
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  async upsertLabOrder(order) {
+    if (!this.client || !order?.id) return { ok: false, error: 'Sin Supabase u orden' };
+    const row = this.labOrderRowFromStore(order);
+    const { error } = await this.client
+      .from(ITAD_LAB_ORDERS_TABLE)
+      .upsert(row, { onConflict: 'lab_order_id' });
+    if (error) return { ok: false, error: error.message };
+    const norm = await this.syncNormalizedLabOrder(order);
+    if (!norm.ok) return { ok: false, error: norm.error };
+    return { ok: true, assets: norm.assets };
+  }
+
+  async syncAllLabOrders(orders) {
+    if (!this.client) return { ok: false, error: 'Sin Supabase', synced: 0, assets: 0 };
+    let synced = 0;
+    let assets = 0;
+    let lastError = '';
+    for (const order of orders || []) {
+      const res = await this.upsertLabOrder(order);
+      if (res.ok) {
+        synced += 1;
+        assets += res.assets || 0;
+      } else lastError = res.error;
+    }
+    return { ok: synced > 0 || !(orders || []).length, synced, assets, error: lastError };
+  }
+
+  async upsertOrderIntake({ tcId, form, memoText }) {
+    if (!this.client || !form) return { ok: false, error: 'Sin Supabase' };
+    const ord = (form.projectOrder || '').trim().toUpperCase();
+    const row = {
+      client_project_order: ord || null,
+      po_reference: form.poReference || null,
+      tc_id: tcId || null,
+      memo_text: memoText || null,
+      form_json: form,
+      country_code: 'GT',
+      updated_at: new Date().toISOString()
+    };
+    if (ord) {
+      const { error } = await this.client
+        .from(ITAD_ORDER_INTAKES_TABLE)
+        .upsert(row, { onConflict: 'client_project_order' });
+      if (error) return { ok: false, error: error.message };
+      return { ok: true };
+    }
+    const { error } = await this.client.from(ITAD_ORDER_INTAKES_TABLE).insert(row);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  }
+
+  async fetchIntakeByProjectOrder(projectOrder) {
+    if (!this.client) return { ok: false, error: 'Sin Supabase' };
+    const ord = String(projectOrder || '').trim().toUpperCase();
+    if (!/^ORD\d+$/i.test(ord)) return { ok: false, error: 'Indique ORD#####' };
+    const { data, error } = await this.client
+      .from(ITAD_ORDER_INTAKES_TABLE)
+      .select('*')
+      .eq('client_project_order', ord)
+      .maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: `No hay registro para ${ord}` };
+    return { ok: true, data };
+  }
+}
+
+let itadSupabaseHub = null;
+function getItadSupabaseHub() {
+  if (!itadSupabaseHub) itadSupabaseHub = new ItadSupabaseHub();
+  return itadSupabaseHub;
+}
+
+// Adaptador: Almacenamiento Supabase S3 con Desacoplamiento de Binarios
+class SupabaseStorageAdapter {
+  constructor() {
+    const hub = getItadSupabaseHub();
+    this.client = hub.client;
+    this.url = hub.url;
+    this.key = hub.key;
+    this.bucketPhotos = hub.bucketPhotos;
+    this.bucketPdfs = hub.bucketPdfs;
+  }
+
+  isConnected() {
+    return getItadSupabaseHub().isConnected();
+  }
+
+  async uploadPhoto(blob, filename) {
+    if (!this.client) {
+      // Fallback local: URL de objeto temporal (no se persiste en DB)
+      return {
+        storagePath: 'local://' + filename,
+        publicUrl: URL.createObjectURL(blob),
+        isLocalFallback: true
+      };
+    }
+
+    const path = `cosmetic/${new Date().getFullYear()}/${filename}`;
+    const { data, error } = await this.client.storage
+      .from(this.bucketPhotos)
+      .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+
+    if (error) throw error;
+
+    const { data: urlData } = this.client.storage.from(this.bucketPhotos).getPublicUrl(path);
+    return {
+      storagePath: path,
+      publicUrl: urlData ? urlData.publicUrl : '',
+      isLocalFallback: false
+    };
+  }
+
+  async uploadPdf(fileBuffer, filename) {
+    if (!this.client) {
+      return {
+        storagePath: 'local://' + filename,
+        publicUrl: URL.createObjectURL(new Blob([fileBuffer], { type: 'application/pdf' })),
+        isLocalFallback: true
+      };
+    }
+
+    const path = `certificates/${filename}`;
+    const { data, error } = await this.client.storage
+      .from(this.bucketPdfs)
+      .upload(path, fileBuffer, { contentType: 'application/pdf', upsert: true });
+
+    if (error) throw error;
+
+    const { data: urlData } = this.client.storage.from(this.bucketPdfs).getPublicUrl(path);
+    return {
+      storagePath: path,
+      publicUrl: urlData ? urlData.publicUrl : '',
+      isLocalFallback: false
+    };
+  }
+}
+
+// Adaptador: Parser de Reportes Blancco con Resolución de Falsos Positivos
+class BlanccoPdfParserAdapter {
+  static async parse(buffer) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer.slice(0)) }).promise;
+    
+    try {
+      const items = [];
+      for (let p = 1; p <= doc.numPages; p++) {
+        const page = await doc.getPage(p);
+        const textContent = await page.getTextContent();
+        textContent.items.forEach(i => items.push({
+          str: i.str,
+          x: i.transform[4],
+          y: i.transform[5] - (p * 10000)
+        }));
+      }
+
+      // Agrupación y ordenamiento por coordenadas
+      const rows = [];
+      for (const it of items) {
+        if (!it.str || !it.str.trim()) continue;
+        let row = rows.find(r => Math.abs(r.y - it.y) < 3);
+        if (!row) { row = { y: it.y, parts: [] }; rows.push(row); }
+        row.parts.push(it);
+      }
+      rows.sort((a, b) => b.y - a.y);
+      const text = rows.map(r => r.parts.sort((a, b) => a.x - b.x).map(p => p.str.trim()).join(' ')).join('\n');
+      
+      return this.extractDetails(text);
+    } finally {
+      if (doc) doc.destroy(); // Liberación de memoria para prevenir caídas de Safari/Chrome
+    }
+  }
+
+  static extractDetails(rawText) {
+    const t = rawText.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ');
+    const hwMatch = t.slice(t.indexOf('Hardware Details') >= 0 ? t.indexOf('Hardware Details') : 0);
+    
+    const mfg = (hwMatch.match(/Manufacturer:\s*(.+?)\s+Chassis Type:/i) || [])[1] || '';
+    const ms = hwMatch.match(/Model:\s*(.+?)\s+Serial:\s*(\S+)/i);
+    let model = ms ? ms[1].trim() : '';
+    const serial = ms ? ms[2].trim() : '';
+    
+    // Normalización de modelo Lenovo (Ej. 20W1S40S1B -> ThinkPad T14 Gen 2i)
+    const sysVerMatch = hwMatch.match(/System Version:\s*(.+?)(?=\s+(?:System SKU|Asset Tag|Processor|Enclosure|$))/i);
+    const sysVersion = sysVerMatch ? sysVerMatch[1].trim() : '';
+    if (/lenovo/i.test(mfg) && sysVersion && !/not available|none|^A\d+$/i.test(sysVersion)) {
+      model = `${model} (${sysVersion})`;
+    }
+
+    // CPU con formateo estándar
+    const cpuMatch = hwMatch.match(/Processor:\s*(.+?),\s*Cores:\s*(\d+)/i);
+    let cpu = '';
+    if (cpuMatch) {
+      const cleanCpu = cpuMatch[1]
+        .replace(/^GenuineIntel,\s*/i, '')
+        .replace(/^AuthenticAMD,\s*/i, '')
+        .replace(/\b\d+(st|nd|rd|th) Gen\s+/i, '')
+        .replace(/\(R\)|\(TM\)/g, '')
+        .replace(/\s+/g, ' ').trim();
+      cpu = `${cleanCpu} (${cpuMatch[2]} núcleos)`;
+    }
+
+    // Memoria RAM
+    const ram = (hwMatch.match(/Total Memory:\s*(\d+\s*GB)/i) || [])[1] || '';
+    const ddr = (hwMatch.match(/Memory Bank:[^]*?(DDR\d)/i) || [])[1] || '';
+    const fullRam = ram ? `${ram.replace(/\s+/g, '')}${ddr ? ' ' + ddr : ''}` : '';
+
+    // Discos y Estado de Sanitización
+    const disks = [];
+    const parts = t.split(/Disk:\s*\d+\s*(?:\(\d+-\d+\))?/).slice(1);
+    for (const p of parts) {
+      const dSerial = (p.match(/Serial:\s*(\S+)/i) || [])[1] || '';
+      const dSize = ((p.match(/Size:\s*(\d+\s*(?:GB|TB))/i) || [])[1] || '').replace(/\s+/g, '');
+      const dMethod = (p.match(/Method:\s*(.+?)\s+Erasure Rounds/i) || [])[1] || '';
+      
+      // Lookbehind negativo para no confundir 'Health Status: Good' con 'Status: Erased'
+      const stMatch = p.match(/(?<!Health\s)Status:\s*([A-Za-z]+)/i);
+      const dStatus = stMatch ? stMatch[1].trim() : '';
+      const dHealth = (p.match(/Health Status:\s*(\w+)/i) || [])[1] || 'Good';
+
+      if (dSerial) {
+        disks.push({
+          serial: dSerial,
+          size: dSize,
+          wipeStatus: /^erased$/i.test(dStatus) ? 'Sí' : 'No',
+          destruction: /^erased$/i.test(dStatus) ? 'No' : 'Yes',
+          method: dMethod,
+          health: dHealth
+        });
+      }
+    }
+
+    // Batería
+    const battCheck = (t.match(/Battery Capacity:\s*(Failed|Successful|Not available)/i) || [])[1] || '';
+    const batteryStatus = battCheck === 'Failed' ? 'Fail' : 'Pass';
+
+    return {
+      manufacturer: mfg,
+      model,
+      serial,
+      sysVersion,
+      cpu,
+      ram: fullRam,
+      batteryStatus,
+      disks
+    };
+  }
+}
+
+/**
+ * ============================================================================
+ * 3. APPLICATION & COORDINATION LAYER
+ * ============================================================================
+ */
+const AppState = {
+  orderMetadata: {
+    customer: '',
+    project: '',
+    pickupDate: '',
+    address: '',
+    countryCode: 'GT',
+    serviceOrderId: ''
+  },
+  items: [],
+  storage: new SupabaseStorageAdapter(),
+  blanccoRecords: new Map(),
+  signerClient: { name: '', dpi: '', signature: null },
+  signerXsi: { name: '', dpi: '', signature: null },
+  rejectionAttempts: [],
+  workflow: {
+    orderPhase: 'NONE',
+    activeModule: 'tab-reception',
+    orderClosed: false
+  }
+};
+
+const WORKFLOW_PHASES = [
+  { id: 'RECEPTION', module: 'tab-reception', label: 'Recepción' },
+  { id: 'WIPING', module: 'tab-wiping', label: 'Borrado y diagnóstico' },
+  { id: 'RECONCILIATION', module: 'tab-reconciliation', label: 'Conciliación' },
+  { id: 'FINISHED', module: 'tab-finished', label: 'Finalizado / Recompra' }
+];
+
+function workflowPhaseIndex(phaseId) {
+  return WORKFLOW_PHASES.findIndex(p => p.id === phaseId);
+}
+
+function saveWorkflowToStorage() {
+  const key = AppState.orderMetadata.serviceOrderId || 'draft-order';
+  localStorage.setItem(`itad_workflow_${key}`, JSON.stringify(AppState.workflow));
+}
+
+function loadWorkflowFromStorage() {
+  const key = AppState.orderMetadata.serviceOrderId || 'draft-order';
+  try {
+    const raw = localStorage.getItem(`itad_workflow_${key}`);
+    if (!raw) return;
+    AppState.workflow = { ...AppState.workflow, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+}
+
+function resetWorkflowState() {
+  AppState.workflow = {
+    orderPhase: AppState.items.length ? 'RECEPTION' : 'NONE',
+    activeModule: 'tab-reception',
+    orderClosed: false
+  };
+}
+
+function serializeAssetItem(item) {
+  return {
+    itemNo: item.itemNo,
+    serial: item.serial.raw,
+    make: item.make,
+    model: item.model,
+    category: item.category,
+    status: item.status,
+    scannedAt: item.scannedAt,
+    scanMethod: item.scanMethod,
+    cosmeticNote: item.cosmeticNote,
+    photoRef: item.photoRef
+      ? {
+          storagePath: item.photoRef.storagePath,
+          publicUrl: item.photoRef.publicUrl,
+          sizeBytes: item.photoRef.sizeBytes
+        }
+      : null,
+    disks: item.disks.map(d => ({
+      serial: d.serial, size: d.size, wipeStatus: d.wipeStatus,
+      destruction: d.destruction, method: d.method, health: d.health
+    })),
+    cpu: item.cpu,
+    ram: item.ram,
+    batteryStatus: item.batteryStatus,
+    finalStatus: item.finalStatus,
+    remarketPrice: item.remarketPrice,
+    serviceFee: item.serviceFee,
+    reportPdfRef: item.reportPdfRef
+  };
+}
+
+function deserializeAssetItem(j) {
+  const item = new Domain.AssetItem({
+    itemNo: j.itemNo,
+    serial: j.serial,
+    make: j.make,
+    model: j.model,
+    category: j.category
+  });
+  item.status = j.status || 'PENDING';
+  item.scannedAt = j.scannedAt;
+  item.scanMethod = j.scanMethod;
+  item.cosmeticNote = j.cosmeticNote || '';
+  item.photoRef = j.photoRef || null;
+  item.cpu = j.cpu || '';
+  item.ram = j.ram || '';
+  item.batteryStatus = j.batteryStatus || 'Pass';
+  item.finalStatus = j.finalStatus || 'Remarketing';
+  item.remarketPrice = j.remarketPrice ?? 85.5;
+  item.serviceFee = j.serviceFee ?? 7;
+  item.reportPdfRef = j.reportPdfRef || null;
+  item.disks = (j.disks || []).map(d => new Domain.StorageDevice(d));
+  return item;
+}
+
+const OrderStore = {
+  orders: [],
+  activeOrderId: null,
+  STORAGE_KEY: 'itad_open_orders_v1',
+
+  persistActive() {
+    if (!this.activeOrderId) return;
+    const idx = this.orders.findIndex(o => o.id === this.activeOrderId);
+    if (idx < 0) return;
+    const blancco = [];
+    AppState.blanccoRecords.forEach((v, k) => {
+      const { originalBuffer, ...rest } = v;
+      blancco.push([k, rest]);
+    });
+    this.orders[idx] = {
+      ...this.orders[idx],
+      updatedAt: new Date().toISOString(),
+      orderMetadata: { ...AppState.orderMetadata },
+      items: AppState.items.map(serializeAssetItem),
+      blanccoRecords: blancco,
+      workflow: { ...AppState.workflow },
+      rejectionAttempts: [...AppState.rejectionAttempts],
+      status: AppState.workflow.orderClosed ? 'CLOSED' : 'OPEN'
+    };
+    this.saveAll();
+  },
+
+  applyToAppState(order) {
+    if (!order) {
+      AppState.orderMetadata = {
+        customer: '', project: '', pickupDate: '', address: '',
+        countryCode: 'GT', serviceOrderId: ''
+      };
+      AppState.items = [];
+      AppState.blanccoRecords = new Map();
+      AppState.rejectionAttempts = [];
+      resetWorkflowState();
+      return;
+    }
+    AppState.orderMetadata = { ...order.orderMetadata };
+    AppState.items = (order.items || []).map(deserializeAssetItem);
+    AppState.blanccoRecords = new Map();
+    (order.blanccoRecords || []).forEach(([k, v]) => AppState.blanccoRecords.set(k, v));
+    AppState.rejectionAttempts = order.rejectionAttempts || [];
+    AppState.workflow = order.workflow
+      ? { ...order.workflow }
+      : {
+          orderPhase: AppState.items.length ? 'RECEPTION' : 'NONE',
+          activeModule: 'tab-reception',
+          orderClosed: order.status === 'CLOSED'
+        };
+  },
+
+  saveAll() {
+    localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
+      orders: this.orders,
+      activeOrderId: this.activeOrderId
+    }));
+    scheduleSupabaseLabSync();
+  },
+
+  loadAll() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.STORAGE_KEY) || '{}');
+      this.orders = raw.orders || [];
+      this.activeOrderId = raw.activeOrderId || null;
+    } catch {
+      this.orders = [];
+      this.activeOrderId = null;
+    }
+    const active = this.orders.find(o => o.id === this.activeOrderId);
+    this.applyToAppState(active || null);
+  },
+
+  createOrder({ orderMetadata, items, label }) {
+    this.persistActive();
+    const id = `ord_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const order = {
+      id,
+      label: label || orderMetadata.customer || 'Orden sin nombre',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      status: 'OPEN',
+      orderMetadata: { ...orderMetadata },
+      items: items.map(serializeAssetItem),
+      blanccoRecords: [],
+      workflow: {
+        orderPhase: 'RECEPTION',
+        activeModule: 'tab-reception',
+        orderClosed: false
+      },
+      rejectionAttempts: []
+    };
+    this.orders.unshift(order);
+    this.activeOrderId = id;
+    this.applyToAppState(order);
+    this.saveAll();
+    return order;
+  },
+
+  /** Carga inventario Excel en la orden activa (conserva TC-GT si ya existía) */
+  loadExcelIntoActive(orderMetadata, newItems) {
+    this.persistActive();
+    let order = this.orders.find(o => o.id === this.activeOrderId);
+    if (!order) {
+      return this.createOrder({ orderMetadata, items: newItems, label: orderMetadata.customer });
+    }
+    const prevMeta = order.orderMetadata || {};
+    order.items = newItems.map(serializeAssetItem);
+    order.orderMetadata = {
+      ...prevMeta,
+      ...orderMetadata,
+      countryCode: 'GT',
+      serviceOrderId: prevMeta.serviceOrderId || orderMetadata.serviceOrderId || '',
+      clientProjectOrder: prevMeta.clientProjectOrder || orderMetadata.clientProjectOrder || '',
+      poReference: prevMeta.poReference || orderMetadata.poReference || ''
+    };
+    order.status = 'OPEN';
+    order.workflow = {
+      orderPhase: 'RECEPTION',
+      activeModule: 'tab-reception',
+      orderClosed: false
+    };
+    order.rejectionAttempts = [];
+    order.updatedAt = new Date().toISOString();
+    this.applyToAppState(order);
+    this.saveAll();
+    return order;
+  },
+
+  setActive(orderId) {
+    if (orderId === this.activeOrderId) return;
+    this.persistActive();
+    const order = this.orders.find(o => o.id === orderId);
+    if (!order) return;
+    this.activeOrderId = orderId;
+    this.applyToAppState(order);
+    this.saveAll();
+  },
+
+  closeOrder(orderId) {
+    const o = this.orders.find(x => x.id === orderId);
+    if (!o) return;
+    o.status = 'CLOSED';
+    o.workflow = o.workflow || {};
+    o.workflow.orderClosed = true;
+    o.workflow.orderPhase = 'FINISHED';
+    if (orderId === this.activeOrderId) {
+      AppState.workflow.orderClosed = true;
+      AppState.workflow.orderPhase = 'FINISHED';
+    }
+    this.saveAll();
+  },
+
+  deleteOrder(orderId) {
+    this.orders = this.orders.filter(o => o.id !== orderId);
+    if (this.activeOrderId === orderId) {
+      this.activeOrderId = this.orders.find(x => x.status === 'OPEN')?.id || this.orders[0]?.id || null;
+      const next = this.orders.find(o => o.id === this.activeOrderId);
+      this.applyToAppState(next || null);
+    }
+    this.saveAll();
+  },
+
+  listOpen() {
+    return this.orders.filter(o => o.status !== 'CLOSED');
+  },
+
+  displayId(order) {
+    return order.orderMetadata?.serviceOrderId || order.id.replace('ord_', '').slice(0, 12);
+  },
+
+  phaseLabel(order) {
+    const wf = order.workflow || {};
+    if (wf.orderClosed || order.status === 'CLOSED') return 'Finalizada';
+    const p = WORKFLOW_PHASES.find(x => x.id === wf.orderPhase);
+    return p ? p.label : 'Recepción';
+  }
+};
+
+function persistActiveOrder() {
+  OrderStore.persistActive();
+}
+
+function scheduleSupabaseLabSync() {
+  clearTimeout(itadSupabaseSyncTimer);
+  itadSupabaseSyncTimer = setTimeout(async () => {
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected()) return;
+    const res = await hub.syncAllLabOrders(OrderStore.orders);
+    if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
+      UI.setCloudSyncHint(res.ok ? `Sync ${res.synced} orden(es)` : res.error);
+    }
+  }, 900);
+}
+
+const ORDER_CREATE_FIELD_IDS = [
+  'orderCreateRecipientName', 'orderCreateRecipientEmail', 'orderCreateProjectOrder',
+  'orderCreatePoReference', 'orderCreateCityCountry', 'orderCreateCollectionDay',
+  'orderCreateAddress', 'orderCreateContactName', 'orderCreateContactPhone',
+  'orderCreateEquipmentList'
+];
+
+/** Ignora placeholders visuales y borradores «Ej. …» que no son datos de proyecto */
+function orderCreationFieldRealValue(fieldId) {
+  const el = document.getElementById(fieldId);
+  if (!el) return '';
+  const v = (el.value || '').trim();
+  if (!v) return '';
+  if (/^Ej\.?\s/i.test(v)) return '';
+  const ph = (el.getAttribute('placeholder') || '').trim();
+  if (ph && v === ph) return '';
+  if (ph && v === ph.replace(/^Ej\.?\s*/i, '').trim()) return '';
+  if (/^operaciones@ejemplo\.com$/i.test(v)) return '';
+  return v;
+}
+
+function readOrderCreationForm() {
+  const g = id => orderCreationFieldRealValue(id);
+  const equipmentRaw = g('orderCreateEquipmentList');
+  const equipmentLines = equipmentRaw
+    ? equipmentRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    : [];
+  return {
+    recipientName: g('orderCreateRecipientName'),
+    recipientEmail: g('orderCreateRecipientEmail'),
+    projectOrder: g('orderCreateProjectOrder'),
+    poReference: g('orderCreatePoReference'),
+    cityCountry: g('orderCreateCityCountry'),
+    collectionDay: g('orderCreateCollectionDay'),
+    address: g('orderCreateAddress'),
+    contactName: g('orderCreateContactName'),
+    contactPhone: g('orderCreateContactPhone'),
+    equipmentLines
+  };
+}
+
+function orderCreationTextBlob() {
+  const importText = (document.getElementById('orderCreateImportText')?.value || '').trim();
+  const fields = ORDER_CREATE_FIELD_IDS.map(id => orderCreationFieldRealValue(id)).filter(Boolean);
+  return [importText, ...fields].join('\n');
+}
+
+function mineOrdPoFromText(text) {
+  const t = String(text || '');
+  const ord = (t.match(/\b(ORD\d+)\b/i) || [])[1];
+  let po = (t.match(/\b(PO\s*\d+[\w\s.-]*?)(?=\s*-\s*[A-Z]|\n|$)/i) || [])[1];
+  if (!po) po = (t.match(/\b(PO\s[\w\s.-]+?)(?:\s*-\s*Guatemala|\n|$)/i) || [])[1];
+  return {
+    projectOrder: ord ? ord.toUpperCase() : '',
+    poReference: po ? po.replace(/\s+/g, ' ').trim() : ''
+  };
+}
+
+function setOrderCreationField(id, value) {
+  if (value == null || String(value).trim() === '') return;
+  const el = document.getElementById(id);
+  if (el) el.value = String(value).trim();
+}
+
+/** Prioriza memo/foto → formulario, luego complementa ORD/PO */
+function resolveOrderCreationForm() {
+  const importText = (document.getElementById('orderCreateImportText')?.value || '').trim();
+  if (importText.length > 25) {
+    syncOrderCreationFormFromSource({ silent: true, source: 'memo' });
+  }
+  let form = readOrderCreationForm();
+  const mined = mineOrdPoFromText(orderCreationTextBlob());
+  if (mined.projectOrder && !form.projectOrder) {
+    setOrderCreationField('orderCreateProjectOrder', mined.projectOrder);
+    form.projectOrder = mined.projectOrder;
+  }
+  if (mined.poReference && !form.poReference) {
+    setOrderCreationField('orderCreatePoReference', mined.poReference);
+    form.poReference = mined.poReference;
+  }
+  saveOrderCreationDraft();
+  return form;
+}
+
+function orderCreationReadyForTc(form) {
+  const blob = orderCreationTextBlob();
+  const mined = mineOrdPoFromText(blob);
+  const ord = form.projectOrder || mined.projectOrder;
+  const po = form.poReference || mined.poReference;
+  if (ord || po) return true;
+  if (form.collectionDay && form.address && form.contactName) return true;
+  if (form.equipmentLines.length && (form.address || form.cityCountry)) return true;
+  return false;
+}
+
+function mergeFormWithMined(form) {
+  const mined = mineOrdPoFromText(orderCreationTextBlob());
+  return {
+    ...form,
+    projectOrder: form.projectOrder || mined.projectOrder,
+    poReference: form.poReference || mined.poReference
+  };
+}
+
+function orderCreationToOrderMetadata(form) {
+  return {
+    customer: form.contactName || form.recipientName || 'Cliente ITAD',
+    project: [form.projectOrder, form.poReference].filter(Boolean).join(' · ') || form.poReference,
+    pickupDate: form.collectionDay || new Date().toISOString().slice(0, 10),
+    address: form.address || form.cityCountry || '',
+    countryCode: 'GT',
+    cityCountry: form.cityCountry || '',
+    serviceOrderId: '',
+    clientProjectOrder: form.projectOrder,
+    poReference: form.poReference,
+    contactPhone: form.contactPhone
+  };
+}
+
+function downloadXsiServiceOrderPdf({ tcId, meta, items, equipmentLines }) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'letter' });
+  const received = (items || []).filter(i => i.status === 'RECEIVED').length;
+  let y = 14;
+
+  doc.setFontSize(11);
+  doc.setTextColor(100, 100, 100);
+  doc.text('XS INTERNATIONAL — ITAD SERVICE', 14, y);
+  doc.setTextColor(0, 0, 0);
+  y += 7;
+  doc.setFontSize(15);
+  doc.text('ORDEN DE SERVICIOS AL CLIENTE', 14, y);
+  y += 9;
+  doc.setFontSize(12);
+  doc.setTextColor(37, 99, 235);
+  doc.text(`TC: ${tcId}`, 14, y);
+  doc.setTextColor(0, 0, 0);
+  y += 8;
+  doc.setFontSize(10);
+  if (meta.clientProjectOrder) {
+    doc.text(`Project Order (cliente): ${meta.clientProjectOrder}`, 14, y); y += 5;
+  }
+  if (meta.poReference) {
+    doc.text(`PO / Referencia: ${meta.poReference}`, 14, y); y += 5;
+  }
+  doc.text(`Contacto: ${meta.customer}`, 14, y); y += 5;
+  if (meta.contactPhone) { doc.text(`Teléfono: ${meta.contactPhone}`, 14, y); y += 5; }
+  doc.text(`Fecha recolección: ${meta.pickupDate}`, 14, y); y += 5;
+  doc.text(`Sitio: ${meta.address}`, 14, y); y += 5;
+  if (meta.cityCountry) { doc.text(`Ciudad: ${meta.cityCountry}`, 14, y); y += 5; }
+  doc.text(`Generado: ${new Date().toLocaleString('es-GT')}`, 14, y); y += 7;
+
+  if (items && items.length) {
+    doc.text(`Inventario cargado: ${items.length} equipos · Recibidos: ${received}`, 14, y); y += 7;
+    doc.setFontSize(9);
+    doc.text('#', 14, y);
+    doc.text('Serie', 22, y);
+    doc.text('Marca / Modelo', 58, y);
+    doc.text('Estado', 150, y);
+    y += 2;
+    doc.line(14, y, 200, y);
+    y += 5;
+    items.forEach((item, idx) => {
+      if (y > 252) { doc.addPage(); y = 18; }
+      const estado = item.status === 'RECEIVED' ? 'Recibido' : 'Pendiente';
+      doc.text(String(item.itemNo || idx + 1), 14, y);
+      doc.text(item.serial.raw, 22, y);
+      doc.text(`${item.make} ${item.model}`.slice(0, 48), 58, y);
+      doc.text(estado, 150, y);
+      y += 5;
+    });
+  } else if (equipmentLines && equipmentLines.length) {
+    doc.text('Alcance declarado (correo / memo):', 14, y); y += 6;
+    equipmentLines.forEach(line => {
+      if (y > 270) { doc.addPage(); y = 18; }
+      doc.text(`• ${line}`, 16, y);
+      y += 5;
+    });
+  }
+
+  doc.save(`${tcId}-XSI-orden-servicios.pdf`);
+}
+
+function buildOrderCreationEmailPlain(data) {
+  const bullets = data.equipmentLines.length
+    ? data.equipmentLines.map(l => `• ${l.replace(/^[-•]\s*/, '')}`).join('\n')
+    : '• (indique equipos)';
+  const hello = data.recipientName ? `Hola ${data.recipientName},` : 'Hola,';
+  const projectLine = [data.projectOrder, data.poReference, data.cityCountry].filter(Boolean).join(' - ');
+
+  return `${hello}
+
+Esta es la información de un proyecto nuevo.
+
+Por favor recuerde:
+- Solo deben recolectar los equipos que estén en la lista
+- Por favor me dejan saber que día y hora podemos programar
+- Por favor me envían los datos del personal y vehículo que asistirá
+
+ITAD Service
+
+Project Order #: ${projectLine || '—'}
+
+*** Super Importante *** cuando contacten al Cliente, recuerden mencionar que estan llamando o que vienen de parte de XS International
+
+INFORMACION DEL PROYECTO:
+
+Dia de Recoleccion:
+${data.collectionDay || '—'}
+
+Datos de la Empresa:
+Dirección: ${data.address || '—'}
+Nombre Completo: ${data.contactName || '—'}
+Número de teléfono: ${data.contactPhone || '—'}
+
+Lista y descripción de equipos:
+${bullets}
+
+RECUERDE: Solo recolectar los equipos de la lista`;
+}
+
+function buildOrderCreationEmailHtml(data) {
+  const plain = buildOrderCreationEmailPlain(data);
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const bullets = data.equipmentLines.length
+    ? data.equipmentLines.map(l => `<li>${esc(l.replace(/^[-•]\s*/, ''))}</li>`).join('')
+    : '<li>(indique equipos)</li>';
+  const hello = data.recipientName ? `Hola ${esc(data.recipientName)},` : 'Hola,';
+  const projectLine = [data.projectOrder, data.poReference, data.cityCountry].filter(Boolean).join(' - ');
+
+  return `
+    <p>${hello}</p>
+    <p>Esta es la información de un proyecto nuevo.</p>
+    <p>Por favor recuerde:</p>
+    <ul>
+      <li class="ep-underline">Solo deben recolectar los equipos que estén en la lista</li>
+      <li class="ep-underline">Por favor me dejan saber que día y hora podemos programar</li>
+      <li class="ep-underline">Por favor me envían los datos del personal y vehículo que asistirá</li>
+    </ul>
+    <p><strong>ITAD Service</strong></p>
+    <p><strong>Project Order #:</strong> <strong>${esc(projectLine || '—')}</strong></p>
+    <p class="ep-red">*** Super Importante *** cuando contacten al Cliente, recuerden mencionar que estan llamando o que vienen de parte de XS International</p>
+    <h3>INFORMACION DEL PROYECTO:</h3>
+    <p><strong><span class="ep-underline">Dia de Recoleccion:</span></strong><br>
+    <span class="ep-purple">${esc(data.collectionDay || '—')}</span></p>
+    <p><strong><span class="ep-underline">Datos de la Empresa:</span></strong></p>
+    <p><strong>Dirección:</strong> ${esc(data.address || '—')}<br>
+    <strong>Nombre Completo:</strong> ${esc(data.contactName || '—')}<br>
+    <strong>Número de teléfono:</strong> ${esc(data.contactPhone || '—')}</p>
+    <p><strong><span class="ep-underline">Lista y descripción de equipos:</span></strong></p>
+    <ul>${bullets}</ul>
+    <p class="ep-red">RECUERDE: Solo recolectar los equipos de la lista</p>
+  `.trim();
+}
+
+function saveOrderCreationDraft() {
+  const draft = { importText: document.getElementById('orderCreateImportText')?.value || '' };
+  ORDER_CREATE_FIELD_IDS.forEach(id => {
+    draft[id] = document.getElementById(id).value;
+  });
+  localStorage.setItem('itad_order_create_draft', JSON.stringify(draft));
+}
+
+function loadOrderCreationDraft() {
+  try {
+    const draft = JSON.parse(localStorage.getItem('itad_order_create_draft') || '{}');
+    if (draft.importText != null) {
+      document.getElementById('orderCreateImportText').value = draft.importText;
+    }
+    ORDER_CREATE_FIELD_IDS.forEach(id => {
+      if (draft[id] == null) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = draft[id];
+      const real = orderCreationFieldRealValue(id);
+      if (!real && draft[id]) el.value = '';
+    });
+  } catch { /* ignore */ }
+}
+
+function pickLineAfter(text, labelRegex) {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!labelRegex.test(line)) continue;
+    const inline = line.replace(labelRegex, '').replace(/^[\s:*-]+/, '').trim();
+    if (inline.length > 2 && !/^INFORMACION|^Datos/i.test(inline)) return inline;
+    for (let j = i + 1; j < Math.min(lines.length, i + 5); j++) {
+      const next = lines[j].trim();
+      if (!next) continue;
+      if (/^(D[ií]a|Datos|Lista|RECUERDE|Project|ITAD|\*\*\*)/i.test(next)) break;
+      return next;
+    }
+  }
+  return '';
+}
+
+/** Dirección u otros campos que en OCR vienen en varias líneas */
+function pickBlockAfter(text, startLabelRe, stopLabelRe) {
+  const lines = text.split(/\r?\n/);
+  const parts = [];
+  let capture = false;
+  for (const line of lines) {
+    if (startLabelRe.test(line)) {
+      const rest = line.replace(startLabelRe, '').replace(/^[\s:*-]+/, '').trim();
+      if (rest.length > 3) parts.push(rest);
+      capture = true;
+      continue;
+    }
+    if (capture && stopLabelRe && stopLabelRe.test(line)) break;
+    if (capture) {
+      const t = line.trim();
+      if (t) parts.push(t);
+    }
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function parseOrderCreationEmailText(raw) {
+  const text = String(raw || '').replace(/\u00a0/g, ' ').trim();
+  if (!text) return null;
+
+  const parsed = {
+    recipientName: '',
+    recipientEmail: '',
+    projectOrder: '',
+    poReference: '',
+    cityCountry: '',
+    collectionDay: '',
+    address: '',
+    contactName: '',
+    contactPhone: '',
+    equipmentLines: []
+  };
+
+  const hola = text.match(/\bHola\s+([^,\n]+),/i);
+  if (hola) parsed.recipientName = hola[1].trim();
+
+  const mail = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (mail) parsed.recipientEmail = mail[0];
+
+  const poLine = text.match(/Project Order\s*#?\s*:?\s*([^\n]+)/i);
+  if (poLine) {
+    const chunks = poLine[1].split(/\s*-\s*/).map(s => s.trim()).filter(Boolean);
+    const ord = (chunks.join(' ').match(/\b(ORD\d+)\b/i) || [])[1];
+    if (ord) parsed.projectOrder = ord.toUpperCase();
+    if (chunks.length >= 2) parsed.poReference = chunks[1];
+    if (chunks.length >= 3) parsed.cityCountry = chunks.slice(2).join(' - ');
+    else if (chunks.length === 2 && !/^PO\b/i.test(chunks[1]) && !/^ORD/i.test(chunks[1])) {
+      parsed.cityCountry = chunks[1];
+    }
+  }
+  if (!parsed.projectOrder) {
+    const ordOnly = text.match(/\b(ORD\d+)\b/i);
+    if (ordOnly) parsed.projectOrder = ordOnly[1].toUpperCase();
+  }
+  if (!parsed.poReference) {
+    const po = text.match(/\b(PO\s*\d+[\w\s.-]*?)(?=\s*-\s*Guatemala|\s*-\s*[A-Z][a-z]|\n|$)/i)
+      || text.match(/\b(PO\s[\w\s.-]+?)(?:\s-\s|\n|$)/i);
+    if (po) parsed.poReference = po[1].replace(/\s+/g, ' ').trim();
+  }
+  if (!parsed.cityCountry) {
+    const city = text.match(/Guatemala City,\s*Guatemala/i);
+    if (city) parsed.cityCountry = city[0];
+  }
+
+  parsed.collectionDay = pickLineAfter(text, /D[ií]a de Recolecci[oó]n/i);
+  parsed.address = pickBlockAfter(text, /Direcci[oó]n/i, /Nombre Completo/i)
+    || pickLineAfter(text, /Direcci[oó]n/i);
+  parsed.contactName = pickLineAfter(text, /Nombre Completo/i);
+  parsed.contactPhone = pickLineAfter(text, /N[uú]mero de tel[eé]fono|Tel[eé]fono/i);
+  parsed.contactPhone = parsed.contactPhone.replace(/[^\d+\s-]/g, '').trim();
+
+  const listBlock = text.split(/Lista y descripci[oó]n de equipos/i)[1];
+  if (listBlock) {
+    const slice = listBlock.split(/RECUERDE/i)[0] || listBlock;
+    slice.split(/\r?\n/).forEach(line => {
+      let L = line.trim();
+      if (!L) return;
+      L = L.replace(/^[•\-\*·]\s*/, '').replace(/^\d+[\.)]\s*/, '');
+      if (/^(INFORMACION|Datos|Project|ITAD|\*\*)/i.test(L)) return;
+      if (L.length >= 3 && L.length < 120) {
+        if (/\d/.test(L) || /laptop|desktop|monitor|equipo|pc|tablet/i.test(L)) {
+          parsed.equipmentLines.push(L);
+        }
+      }
+    });
+  }
+  if (!parsed.equipmentLines.length) {
+    const qty = text.match(/(\d+)\s+(Laptops?|Desktops?|Equipos?)/i);
+    if (qty) parsed.equipmentLines.push(`${qty[1]} ${qty[2]}`);
+  }
+
+  return parsed;
+}
+
+function applyOrderCreationParsed(parsed) {
+  if (!parsed) return 0;
+  let n = 0;
+  const set = (id, val) => {
+    if (val == null || String(val).trim() === '') return;
+    document.getElementById(id).value = String(val).trim();
+    n++;
+  };
+  set('orderCreateRecipientName', parsed.recipientName);
+  set('orderCreateRecipientEmail', parsed.recipientEmail);
+  set('orderCreateProjectOrder', parsed.projectOrder);
+  set('orderCreatePoReference', parsed.poReference);
+  set('orderCreateCityCountry', parsed.cityCountry);
+  set('orderCreateCollectionDay', parsed.collectionDay);
+  set('orderCreateAddress', parsed.address);
+  set('orderCreateContactName', parsed.contactName);
+  set('orderCreateContactPhone', parsed.contactPhone);
+  if (parsed.equipmentLines && parsed.equipmentLines.length) {
+    document.getElementById('orderCreateEquipmentList').value = parsed.equipmentLines.join('\n');
+    n++;
+  }
+  saveOrderCreationDraft();
+  return n;
+}
+
+/** Llena todo el formulario desde el texto del memo (pegado u OCR en el cuadro import) */
+function syncOrderCreationFormFromSource({ silent = false, source = 'memo' } = {}) {
+  const importText = (document.getElementById('orderCreateImportText')?.value || '').trim();
+  if (!importText) {
+    if (!silent) UIFeedback.toast('Pegue el correo en el cuadro gris o suba una foto del memo', 'warning');
+    return 0;
+  }
+  const parsed = parseOrderCreationEmailText(importText) || {};
+  const mined = mineOrdPoFromText(importText);
+  if (mined.projectOrder) parsed.projectOrder = parsed.projectOrder || mined.projectOrder;
+  if (mined.poReference) parsed.poReference = parsed.poReference || mined.poReference;
+
+  const n = applyOrderCreationParsed(parsed);
+  if (typeof UI !== 'undefined' && UI.renderOrderCreatePreview) UI.renderOrderCreatePreview();
+
+  if (!silent) {
+    const label = source === 'foto' ? 'la foto' : 'el correo pegado';
+    UIFeedback.toast(
+      n > 0 ? `Formulario llenado desde ${label} (${n} campos)` : 'Memo leído; revise campos en blanco',
+      n > 0 ? 'success' : 'warning'
+    );
+  }
+  return n;
+}
+
+/** Excluye filas legales/pie de plantilla (firma, nombres) que no son equipos */
+function looksLikeOrderSerial(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s.length < 4) return false;
+  if (/\bfirma\b|signature|representante|observaciones|custodia|acta de|t[eé]cnico responsable|nombre del|dpi\b/i.test(s)) {
+    return false;
+  }
+  const norm = Domain.SerialMatcher.normalize(s);
+  if (norm.length < 5 || norm.length > 24) return false;
+  if (!/[0-9]/.test(norm)) return false;
+  if (/^(FIRMA|SIGNATURE|CLIENTE|TECNICO|REPRESENTANTE|OBSERVACIONES|NOMBRE|APELLIDO|CUSTODIA|TOTAL)/.test(norm)) {
+    return false;
+  }
+  const words = s.split(/\s+/);
+  if (words.length > 2) return false;
+  return true;
+}
+
+function rowLooksLikeOrderFooter(cellAt, row1) {
+  const chunk = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    .map(c => cellAt(row1, c))
+    .join(' ')
+    .toUpperCase();
+  return /\bFIRMA\b|SIGNATURE|REPRESENTANTE|OBSERVACIONES|ACTA DE RECEPCI|CUSTODIA LEGAL|T[EÉ]CNICO XSI/.test(chunk);
+}
+
+/** Lee orden de recolección (.xls y .xlsx) — ExcelJS no soporta .xls */
+function parseOrderSpreadsheet(arrayBuffer) {
+  if (typeof XLSX === 'undefined') {
+    throw new Error('No se cargó la librería SheetJS. Revise conexión a internet y recargue la página.');
+  }
+  const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) throw new Error('El archivo no tiene hojas.');
+  const ws = wb.Sheets[sheetName];
+  if (!ws || !ws['!ref']) throw new Error('La primera hoja está vacía.');
+
+  const cellAt = (row1, col1) => {
+    const addr = XLSX.utils.encode_cell({ r: row1 - 1, c: col1 - 1 });
+    const c = ws[addr];
+    if (!c) return '';
+    const v = c.w != null ? c.w : c.v;
+    if (v == null) return '';
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    return String(v).trim();
+  };
+
+  const orderMetadata = {
+    customer: cellAt(6, 4) || 'CLARO GUATEMALA',
+    project: cellAt(7, 9) || 'RENOVACIÓN 2026',
+    pickupDate: cellAt(6, 9) || new Date().toISOString().slice(0, 10),
+    address: cellAt(8, 4) || 'Ciudad de Guatemala'
+  };
+
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const newItems = [];
+  let skippedFooter = 0;
+
+  for (let r = 11; r <= range.e.r + 1; r++) {
+    if (rowLooksLikeOrderFooter(cellAt, r)) break;
+
+    const serial = cellAt(r, 6);
+    if (!serial) continue;
+    if (!looksLikeOrderSerial(serial)) {
+      skippedFooter++;
+      continue;
+    }
+
+    const numRaw = cellAt(r, 2);
+    const itemNo = Number(numRaw);
+    if (numRaw !== '' && !Number.isFinite(itemNo)) continue;
+
+    try {
+      newItems.push(new Domain.AssetItem({
+        itemNo: Number.isFinite(itemNo) ? itemNo : newItems.length + 1,
+        serial,
+        make: cellAt(r, 4) || 'DELL INC.',
+        model: cellAt(r, 5) || 'Latitude 5420'
+      }));
+    } catch {
+      skippedFooter++;
+    }
+  }
+
+  return { orderMetadata, newItems, sheetName, skippedFooter };
+}
+
+function reserveServiceOrderId(countryCode = 'GT') {
+  const cc = (countryCode || 'GT').toUpperCase().replace(/[^A-Z]/g, '') || 'GT';
+  const key = `itad_tc_counter_${cc}`;
+  const next = (parseInt(localStorage.getItem(key) || '0', 10) || 0) + 1;
+  localStorage.setItem(key, String(next));
+  return `TC-${cc}-${next}`;
+}
+
+function ensureServiceOrderId() {
+  if (AppState.orderMetadata.serviceOrderId) {
+    return AppState.orderMetadata.serviceOrderId;
+  }
+  const id = reserveServiceOrderId(AppState.orderMetadata.countryCode);
+  AppState.orderMetadata.serviceOrderId = id;
+  return id;
+}
+
+// UI Feedback Service (Reemplazo estricto de alert() y confirm())
+const UIFeedback = {
+  toast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    const color = type === 'success' ? 'var(--success)' : type === 'danger' ? 'var(--danger)' : 'var(--primary)';
+    toast.style.borderLeft = `4px solid ${color}`;
+    toast.innerHTML = `<span>${message}</span>`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+  },
+
+  modal({ title, message, onConfirm, onCancel }) {
+    const overlay = document.getElementById('modalDialog');
+    document.getElementById('modalDialogTitle').textContent = title;
+    document.getElementById('modalDialogMessage').textContent = message;
+    overlay.classList.remove('hidden');
+
+    const btnConfirm = document.getElementById('btnModalConfirm');
+    const btnCancel = document.getElementById('btnModalCancel');
+
+    const cleanup = () => {
+      overlay.classList.add('hidden');
+      btnConfirm.onclick = null;
+      btnCancel.onclick = null;
+    };
+
+    btnConfirm.onclick = () => { cleanup(); if (onConfirm) onConfirm(); };
+    btnCancel.onclick = () => { cleanup(); if (onCancel) onCancel(); };
+  }
+};
+
+/**
+ * ============================================================================
+ * 4. UI CONTROLLERS & INTERACTION BINDINGS
+ * ============================================================================
+ */
+const UI = {
+  activePhotoItem: null,
+
+  init() {
+    OrderStore.loadAll();
+    this.bindSidebarNav();
+    this.bindWorkflowActions();
+    this.bindOpenOrdersModule();
+    this.bindOrderCreationModule();
+    this.bindReceptionOrderSelector();
+    this.bindOrderExcelLoader();
+    this.bindBarcodeScanner();
+    this.bindCosmeticPhotoCapture();
+    this.bindBlanccoBatchProcessing();
+    this.bindSignaturePads();
+    this.bindCloudStorageModal();
+    this.bindExportActions();
+    this.updateCloudIndicator();
+    this.renderReceptionTable();
+    this.renderWorkflowChrome();
+    this.updateOpenOrdersBadge();
+  },
+
+  canAccessPhase(phaseId) {
+    if (phaseId === 'CREATE' || phaseId === 'ORDERS') return true;
+    if (!AppState.items.length) return phaseId === 'RECEPTION';
+    if (AppState.workflow.orderClosed) return true;
+    const current = AppState.workflow.orderPhase === 'NONE' ? 'RECEPTION' : AppState.workflow.orderPhase;
+    return workflowPhaseIndex(phaseId) <= workflowPhaseIndex(current);
+  },
+
+  showModule(moduleId) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(moduleId);
+    if (el) el.classList.add('active');
+    AppState.workflow.activeModule = moduleId;
+    document.querySelectorAll('#sidebarNav button').forEach(b => {
+      b.classList.toggle('active', b.dataset.module === moduleId);
+    });
+    if (moduleId === 'tab-reception') UI.renderReceptionOrderSelector();
+    if (moduleId === 'tab-reconciliation') UI.renderAuditPreview();
+    if (moduleId === 'tab-finished') UI.renderFinishedModule();
+    if (moduleId === 'tab-order-create') {
+      UI.renderOrderCreatePreview();
+      UI.updateOrderCreateTcBadge();
+    }
+    if (moduleId === 'tab-orders-open') UI.renderOpenOrdersList();
+    UI.renderWorkflowChrome();
+  },
+
+  bindOpenOrdersModule() {
+    document.getElementById('btnRefreshOrdersList').onclick = () => UI.renderOpenOrdersList();
+    document.getElementById('btnGoLoadNewOrder').onclick = () => {
+      UI.showModule('tab-reception');
+      UIFeedback.toast('Use «Cargar Orden» — cada Excel crea una recepción nueva', 'info');
+    };
+  },
+
+  renderOpenOrdersList() {
+    persistActiveOrder();
+    const open = OrderStore.listOpen();
+    const rows = OrderStore.orders.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+
+    document.getElementById('kpiOpenOrders').textContent = String(open.length);
+    const active = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
+    document.getElementById('kpiActiveOrderLabel').textContent = active
+      ? OrderStore.displayId(active)
+      : '—';
+
+    const tbody = document.querySelector('#tableOpenOrders tbody');
+    tbody.innerHTML = '';
+
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);">No hay órdenes. Cargue un Excel en Recepción.</td></tr>';
+      UI.updateOpenOrdersBadge();
+      return;
+    }
+
+    rows.forEach(order => {
+      const items = order.items || [];
+      const received = items.filter(i => i.status === 'RECEIVED').length;
+      const isActive = order.id === OrderStore.activeOrderId;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${isActive ? '<span class="badge badge-success">●</span>' : '—'}</td>
+        <td class="code-mono">${OrderStore.displayId(order)}</td>
+        <td>${order.orderMetadata?.customer || '—'}</td>
+        <td>${order.orderMetadata?.project || '—'}</td>
+        <td>${items.length}</td>
+        <td>${received}</td>
+        <td><span class="badge ${order.status === 'CLOSED' ? 'badge-muted' : 'badge-warning'}">${OrderStore.phaseLabel(order)}</span></td>
+        <td style="white-space:nowrap;">
+          <button type="button" class="btn btn-secondary btn-small btn-order-activate">Activar</button>
+          <button type="button" class="btn btn-secondary btn-small btn-order-close">Cerrar</button>
+        </td>
+      `;
+      if (order.status === 'CLOSED') {
+        tr.style.opacity = '0.65';
+      }
+      tr.querySelector('.btn-order-activate').onclick = () => {
+        OrderStore.setActive(order.id);
+        UI.renderReceptionTable();
+        UI.renderWipingTable();
+        UI.renderOpenOrdersList();
+        UI.showModule('tab-reception');
+        UIFeedback.toast(`Orden activa: ${OrderStore.displayId(order)}`, 'success');
+      };
+      tr.querySelector('.btn-order-close').onclick = () => {
+        UIFeedback.modal({
+          title: 'Cerrar orden',
+          message: `¿Archivar ${OrderStore.displayId(order)}? Podrá verla en la lista pero quedará marcada como finalizada.`,
+          onConfirm: () => {
+            OrderStore.closeOrder(order.id);
+            UI.renderOpenOrdersList();
+            UI.renderWorkflowChrome();
+            UIFeedback.toast('Orden cerrada', 'info');
+          }
+        });
+      };
+      tbody.appendChild(tr);
+    });
+    UI.updateOpenOrdersBadge();
+  },
+
+  updateOpenOrdersBadge() {
+    const n = OrderStore.listOpen().length;
+    const el = document.getElementById('openOrdersCount');
+    if (el) el.textContent = String(n);
+  },
+
+  bindOrderCreationModule() {
+    loadOrderCreationDraft();
+    ORDER_CREATE_FIELD_IDS.forEach(id => {
+      document.getElementById(id).addEventListener('input', () => {
+        saveOrderCreationDraft();
+      });
+    });
+
+    document.getElementById('btnOrderCreatePreview').onclick = () => UI.renderOrderCreatePreview();
+    document.getElementById('btnOrderCreatePrefill').onclick = () => UI.prefillOrderCreationFromApp();
+    document.getElementById('btnOrderCreateXsiTc').onclick = () => UI.createXsiServiceOrderFromCreation();
+    UI.updateOrderCreateTcBadge();
+
+    document.getElementById('btnOrderCreatePasteClipboard').onclick = async () => {
+      try {
+        const clip = await navigator.clipboard.readText();
+        document.getElementById('orderCreateImportText').value = clip;
+        saveOrderCreationDraft();
+        syncOrderCreationFormFromSource({ source: 'memo' });
+      } catch {
+        UIFeedback.toast('Permita acceso al portapapeles o pegue manualmente (Ctrl+V) en el cuadro gris', 'warning');
+      }
+    };
+
+    document.getElementById('btnOrderCreateParseText').onclick = () => {
+      syncOrderCreationFormFromSource({ source: 'memo' });
+    };
+
+    document.getElementById('btnOrderCreateFetchSupabase').onclick = () => UI.fetchOrderCreationFromSupabase();
+
+    const importArea = document.getElementById('orderCreateImportText');
+    let importDebounce;
+    importArea.addEventListener('paste', () => {
+      setTimeout(() => syncOrderCreationFormFromSource({ silent: false, source: 'memo' }), 120);
+    });
+    importArea.addEventListener('input', () => {
+      saveOrderCreationDraft();
+      clearTimeout(importDebounce);
+      importDebounce = setTimeout(() => {
+        if (importArea.value.trim().length > 60) {
+          syncOrderCreationFormFromSource({ silent: true, source: 'memo' });
+        }
+      }, 600);
+    });
+
+    document.getElementById('inputOrderCreatePhoto').onchange = async e => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      if (typeof Tesseract === 'undefined') {
+        UIFeedback.toast('OCR no cargó. Revise internet y recargue la página.', 'danger');
+        return;
+      }
+      const statusEl = document.getElementById('orderCreateOcrStatus');
+      statusEl.style.display = 'block';
+      statusEl.textContent = 'Leyendo imagen (OCR)… puede tardar 15–30 s';
+      UIFeedback.toast('Procesando foto del correo…', 'info');
+      try {
+        const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.85);
+        const { data } = await Tesseract.recognize(compressed.blob, 'spa+eng', {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              statusEl.textContent = `OCR ${Math.round((m.progress || 0) * 100)}%…`;
+            }
+          }
+        });
+        const ocrText = data.text || '';
+        document.getElementById('orderCreateImportText').value = ocrText;
+        saveOrderCreationDraft();
+        const filled = syncOrderCreationFormFromSource({ silent: true, source: 'foto' });
+        statusEl.textContent = filled
+          ? `OCR listo — formulario llenado (${filled} campos). Texto guardado arriba por si corrige.`
+          : 'OCR terminado; pocos campos reconocidos. Edite el texto gris arriba y pulse «Llenar formulario».';
+        UIFeedback.toast(
+          filled ? `Formulario llenado desde la foto (${filled} campos)` : 'Revise el texto OCR en el cuadro gris',
+          filled ? 'success' : 'warning'
+        );
+      } catch (err) {
+        statusEl.textContent = 'Error OCR: ' + (err.message || err);
+        UIFeedback.toast('No se pudo leer la imagen', 'danger');
+      }
+    };
+
+    document.getElementById('btnOrderCreateCopy').onclick = async () => {
+      const text = buildOrderCreationEmailPlain(readOrderCreationForm());
+      try {
+        await navigator.clipboard.writeText(text);
+        UIFeedback.toast('Texto copiado al portapapeles', 'success');
+      } catch {
+        UIFeedback.toast('No se pudo copiar; use Vista previa y copie manualmente', 'warning');
+      }
+    };
+
+    document.getElementById('btnOrderCreateSendEmail').onclick = () => {
+      const data = readOrderCreationForm();
+      if (!data.recipientEmail) {
+        UIFeedback.toast('Indique el correo del destinatario', 'warning');
+        return;
+      }
+      if (!data.projectOrder) {
+        UIFeedback.toast('Indique Project Order # (ej. ORD26580)', 'warning');
+        return;
+      }
+      const subject = `ITAD Service — Project Order ${data.projectOrder}${data.poReference ? ' — ' + data.poReference : ''}`;
+      const body = buildOrderCreationEmailPlain(data);
+      if (body.length > 1800) {
+        UIFeedback.modal({
+          title: 'Correo muy largo',
+          message: 'El texto excede el límite de mailto. Se copiará al portapapeles; pegue el cuerpo en Outlook manualmente.',
+          onConfirm: async () => {
+            await navigator.clipboard.writeText(body);
+            window.location.href = `mailto:${encodeURIComponent(data.recipientEmail)}?subject=${encodeURIComponent(subject)}`;
+          }
+        });
+        return;
+      }
+      window.location.href = `mailto:${encodeURIComponent(data.recipientEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      UIFeedback.toast('Abriendo cliente de correo…', 'info');
+    };
+  },
+
+  prefillOrderCreationFromApp() {
+    const meta = AppState.orderMetadata;
+    if (meta.address) document.getElementById('orderCreateAddress').value = meta.address;
+    if (meta.cityCountry || meta.address) {
+      document.getElementById('orderCreateCityCountry').value =
+        meta.cityCountry || meta.address.split(',').slice(-2).join(',').trim() || 'Guatemala City, Guatemala';
+    }
+    if (meta.pickupDate) {
+      document.getElementById('orderCreateCollectionDay').value = String(meta.pickupDate);
+    }
+    if (meta.project) document.getElementById('orderCreatePoReference').value = meta.project;
+    if (AppState.orderMetadata.serviceOrderId) {
+      document.getElementById('orderCreateProjectOrder').value = AppState.orderMetadata.serviceOrderId;
+    }
+    if (AppState.items.length) {
+      const n = AppState.items.length;
+      const kind = AppState.items[0].category || 'Laptops';
+      document.getElementById('orderCreateEquipmentList').value = `${n} ${kind}`;
+    }
+    saveOrderCreationDraft();
+    UI.renderOrderCreatePreview();
+    UIFeedback.toast('Campos actualizados desde la orden activa', 'success');
+  },
+
+  renderOrderCreatePreview() {
+    const data = readOrderCreationForm();
+    document.getElementById('orderCreateEmailPreview').innerHTML = buildOrderCreationEmailHtml(data);
+  },
+
+  advanceWorkflowPhase(nextPhaseId) {
+    AppState.workflow.orderPhase = nextPhaseId;
+    AppState.workflow.orderClosed = false;
+    const step = WORKFLOW_PHASES.find(p => p.id === nextPhaseId);
+    if (step) UI.showModule(step.module);
+    persistActiveOrder();
+    UI.renderWorkflowChrome();
+  },
+
+  bindSidebarNav() {
+    document.querySelectorAll('#sidebarNav button').forEach(btn => {
+      btn.onclick = () => {
+        const phase = btn.dataset.phase;
+        if (!UI.canAccessPhase(phase)) {
+          UIFeedback.toast('Termine la fase anterior para abrir este módulo', 'warning');
+          return;
+        }
+        UI.showModule(btn.dataset.module);
+      };
+    });
+  },
+
+  bindWorkflowActions() {
+    document.getElementById('btnCompleteReception').onclick = () => {
+      if (!AppState.items.length) return;
+      const received = AppState.items.filter(i => i.status === 'RECEIVED').length;
+      const go = () => {
+        UI.advanceWorkflowPhase('WIPING');
+        UIFeedback.toast('Orden en módulo Borrado y diagnóstico', 'success');
+      };
+      if (!received) {
+        UIFeedback.modal({
+          title: 'Recepción sin escaneos',
+          message: 'No hay equipos marcados como recibidos. ¿Avanzar igual a borrado?',
+          onConfirm: go
+        });
+        return;
+      }
+      go();
+    };
+
+    document.getElementById('btnCompleteWiping').onclick = () => {
+      UIFeedback.modal({
+        title: 'Completar borrado',
+        message: '¿Confirmar que el borrado/diagnóstico está listo para conciliación?',
+        onConfirm: () => {
+          UI.advanceWorkflowPhase('RECONCILIATION');
+          UIFeedback.toast('Orden en módulo Conciliación', 'success');
+        }
+      });
+    };
+
+    document.getElementById('btnCompleteReconciliation').onclick = () => {
+      UIFeedback.modal({
+        title: 'Completar conciliación',
+        message: '¿Pasar la orden a Finalizado / Recompra?',
+        onConfirm: () => {
+          UI.advanceWorkflowPhase('FINISHED');
+          UIFeedback.toast('Orden en cierre comercial', 'success');
+        }
+      });
+    };
+
+    document.getElementById('btnCloseOrder').onclick = () => {
+      AppState.workflow.orderClosed = true;
+      AppState.workflow.orderPhase = 'FINISHED';
+      if (OrderStore.activeOrderId) OrderStore.closeOrder(OrderStore.activeOrderId);
+      persistActiveOrder();
+      UI.renderFinishedModule();
+      UI.renderWorkflowChrome();
+      UI.updateOpenOrdersBadge();
+      UIFeedback.toast('Orden marcada como finalizada', 'success');
+    };
+
+    document.getElementById('btnReopenOrder').onclick = () => {
+      AppState.workflow.orderClosed = false;
+      AppState.workflow.orderPhase = 'RECONCILIATION';
+      const active = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
+      if (active) active.status = 'OPEN';
+      persistActiveOrder();
+      UI.showModule('tab-reconciliation');
+      UIFeedback.toast('Orden reabierta en conciliación', 'info');
+    };
+
+    document.getElementById('btnExportItadExcelFinished').onclick = () => UI.exportItadWorkbook();
+  },
+
+  renderWorkflowChrome() {
+    const wf = AppState.workflow;
+    const phase = wf.orderPhase === 'NONE' ? 'RECEPTION' : wf.orderPhase;
+    const phaseIdx = workflowPhaseIndex(phase);
+    const phaseDef = WORKFLOW_PHASES[phaseIdx] || WORKFLOW_PHASES[0];
+
+    document.getElementById('phaseBannerText').textContent = wf.orderClosed
+      ? 'Finalizada'
+      : phaseDef.label;
+    document.getElementById('phaseBannerHint').textContent = AppState.items.length
+      ? (AppState.orderMetadata.serviceOrderId || 'Orden cargada — genere TC si aún no tiene')
+      : 'Cargue la orden para iniciar el flujo';
+
+    const chip = document.getElementById('sidebarOrderChip');
+    const tc = AppState.orderMetadata.serviceOrderId;
+    chip.innerHTML = AppState.items.length
+      ? `<div style="color:var(--text-muted);margin-bottom:4px;">${AppState.orderMetadata.customer || 'Cliente'}</div>
+         <div class="tc">${tc || 'Sin TC asignado'}</div>
+         <div id="sidebarPhaseLabel" style="margin-top:6px;font-size:11px;color:var(--text-muted);">Fase: ${wf.orderClosed ? 'Cerrada' : phaseDef.label}</div>`
+      : `<div style="color:var(--text-muted);margin-bottom:4px;">Sin orden activa</div><div class="tc">—</div>
+         <div id="sidebarPhaseLabel" style="margin-top:6px;font-size:11px;color:var(--text-muted);">Cargue Excel en Recepción</div>`;
+
+    document.querySelectorAll('#sidebarNav button').forEach(btn => {
+      if (btn.dataset.phase === 'CREATE' || btn.dataset.phase === 'ORDERS') {
+        btn.disabled = false;
+        btn.classList.toggle('active', btn.dataset.module === wf.activeModule);
+        return;
+      }
+      const pIdx = workflowPhaseIndex(btn.dataset.phase);
+      const accessible = UI.canAccessPhase(btn.dataset.phase);
+      btn.disabled = !accessible;
+      btn.classList.toggle('done', pIdx >= 0 && (pIdx < phaseIdx || (wf.orderClosed && pIdx <= phaseIdx)));
+      btn.classList.toggle('active', btn.dataset.module === wf.activeModule);
+    });
+
+    const hasOrder = AppState.items.length > 0;
+    const notClosed = !wf.orderClosed;
+    document.getElementById('btnCompleteReception').disabled = !hasOrder || wf.orderPhase !== 'RECEPTION' || !notClosed;
+    document.getElementById('btnCompleteWiping').disabled = wf.orderPhase !== 'WIPING' || !notClosed;
+    document.getElementById('btnCompleteReconciliation').disabled = wf.orderPhase !== 'RECONCILIATION' || !notClosed;
+  },
+
+  renderFinishedModule() {
+    let remarketing = 0;
+    let spare = 0;
+    let repurchase = 0;
+    const tbody = document.querySelector('#tableFinished tbody');
+    tbody.innerHTML = '';
+
+    AppState.items.forEach(item => {
+      if (item.finalStatus === 'Remarketing') remarketing++;
+      else spare++;
+      repurchase += Number(item.remarketPrice) || 0;
+      const wiped = item.disks.some(d => d.wipeStatus === 'Sí') ? 'Sí' : 'No';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="code-mono">${item.serial.raw}</td>
+        <td>${item.model}</td>
+        <td>${item.finalStatus}</td>
+        <td>$${(item.remarketPrice || 0).toFixed(2)}</td>
+        <td>$${(item.serviceFee || 0).toFixed(2)}</td>
+        <td>${wiped}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('kpiRemarketing').textContent = String(remarketing);
+    document.getElementById('kpiSpare').textContent = String(spare);
+    document.getElementById('kpiRepurchaseValue').textContent = `$${repurchase.toFixed(2)}`;
+    document.getElementById('kpiOrderClosed').textContent = AppState.workflow.orderClosed ? 'Finalizada' : 'Abierta';
+  },
+
+  renderReceptionOrderSelector() {
+    const sel = document.getElementById('selectReceptionOpenOrder');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '';
+
+    const optNew = document.createElement('option');
+    optNew.value = '__new__';
+    optNew.textContent = '＋ Nueva orden al cargar Excel';
+    sel.appendChild(optNew);
+
+    const open = OrderStore.listOpen();
+    open.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.id;
+      const n = (o.items || []).length;
+      const tc = OrderStore.displayId(o);
+      const cust = o.orderMetadata?.customer || o.label || '—';
+      opt.textContent = n > 0
+        ? `${tc} · ${cust} · ${n} series`
+        : `${tc} · ${cust} · sin Excel aún`;
+      sel.appendChild(opt);
+    });
+
+    if (OrderStore.activeOrderId && [...sel.options].some(o => o.value === OrderStore.activeOrderId)) {
+      sel.value = OrderStore.activeOrderId;
+    } else if (prev && [...sel.options].some(o => o.value === prev)) {
+      sel.value = prev;
+    } else if (OrderStore.activeOrderId) {
+      sel.value = OrderStore.activeOrderId;
+    }
+
+    const hint = document.getElementById('receptionOrderHint');
+    if (hint) {
+      const active = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
+      hint.textContent = active
+        ? `Activa: ${OrderStore.displayId(active)} — cargue el Excel para importar series a esta orden.`
+        : 'Seleccione una orden TC o elija «Nueva orden» y cargue el Excel.';
+    }
+  },
+
+  bindReceptionOrderSelector() {
+    document.getElementById('btnReceptionRefreshOrders').onclick = () => {
+      UI.renderReceptionOrderSelector();
+      UIFeedback.toast('Lista de órdenes actualizada', 'info');
+    };
+    document.getElementById('btnReceptionGoOrdersModule').onclick = () => UI.showModule('tab-orders-open');
+    document.getElementById('selectReceptionOpenOrder').onchange = () => {
+      const val = document.getElementById('selectReceptionOpenOrder').value;
+      if (val === '__new__') {
+        UI.renderReceptionOrderSelector();
+        return;
+      }
+      OrderStore.setActive(val);
+      UI.renderReceptionTable();
+      UI.renderWipingTable();
+      UI.renderReceptionOrderSelector();
+      UIFeedback.toast(`Recepción en: ${OrderStore.displayId(OrderStore.orders.find(o => o.id === val))}`, 'success');
+    };
+  },
+
+  applyExcelToReceptionOrder(orderMetadata, newItems, skippedFooter, ext) {
+    const skipNote = skippedFooter > 0 ? ` · ${skippedFooter} fila(s) de pie ignoradas` : '';
+    const meta = { ...orderMetadata, countryCode: 'GT' };
+    const sel = document.getElementById('selectReceptionOpenOrder').value;
+
+    const finish = (msg) => {
+      UI.showModule('tab-reception');
+      UI.renderReceptionTable();
+      UI.renderReceptionOrderSelector();
+      UI.updateOpenOrdersBadge();
+      UIFeedback.toast(msg + skipNote, 'success');
+    };
+
+    if (sel === '__new__') {
+      OrderStore.createOrder({
+        orderMetadata: { ...meta, serviceOrderId: '' },
+        items: newItems,
+        label: orderMetadata.customer
+      });
+      finish(`Nueva orden: ${newItems.length} equipos (${ext.toUpperCase()})`);
+      return;
+    }
+
+    OrderStore.setActive(sel);
+    const order = OrderStore.orders.find(o => o.id === sel);
+    const hasItems = order && (order.items || []).length > 0;
+
+    const loadIntoSelected = () => {
+      OrderStore.loadExcelIntoActive(meta, newItems);
+      const tc = AppState.orderMetadata.serviceOrderId || OrderStore.displayId(order);
+      finish(`${tc}: ${newItems.length} series cargadas (${ext.toUpperCase()})`);
+    };
+
+    if (hasItems) {
+      UIFeedback.modal({
+        title: 'Reemplazar inventario',
+        message: `La orden ${OrderStore.displayId(order)} ya tiene ${order.items.length} equipos. ¿Reemplazar con el Excel nuevo?`,
+        onConfirm: loadIntoSelected
+      });
+      return;
+    }
+    loadIntoSelected();
+  },
+
+  bindOrderExcelLoader() {
+    document.getElementById('inputOrderExcel').onchange = async e => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls') {
+        UIFeedback.toast('Use un archivo Excel .xlsx o .xls (no CSV ni PDF)', 'danger');
+        return;
+      }
+
+      const sel = document.getElementById('selectReceptionOpenOrder').value;
+      if (sel === '__new__' && OrderStore.listOpen().length === 0) {
+        /* ok — primera orden */
+      } else if (sel !== '__new__' && !OrderStore.orders.find(o => o.id === sel)) {
+        UIFeedback.toast('Seleccione una orden válida en el desplegable', 'warning');
+        return;
+      }
+
+      UIFeedback.toast(`Leyendo ${file.name}…`, 'info');
+      try {
+        const buffer = await file.arrayBuffer();
+        const { orderMetadata, newItems, skippedFooter } = parseOrderSpreadsheet(buffer);
+
+        if (!newItems.length) {
+          UIFeedback.toast(
+            'No se encontraron series válidas (columna F, fila 11+). Revise que no sea solo el bloque de firmas al final.',
+            'danger'
+          );
+          return;
+        }
+
+        UI.applyExcelToReceptionOrder(orderMetadata, newItems, skippedFooter, ext);
+      } catch (err) {
+        console.error('Order Excel load failed:', err);
+        UIFeedback.toast('No se pudo leer la orden: ' + (err.message || err), 'danger');
+      }
+    };
+  },
+
+  bindBarcodeScanner() {
+    document.getElementById('inputCameraBarcode').onchange = async e => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+
+      if (!AppState.items.length) {
+        UIFeedback.toast('Cargue primero el archivo de la orden de recolección', 'warning');
+        return;
+      }
+
+      UIFeedback.toast('Decodificando etiqueta de código de barras...', 'info');
+      try {
+        const texts = await UI.decodeBarcodesFromImage(file);
+        if (!texts.length) {
+          UI.displayScanResult('warning', 'No se detectó código legible. Enfoque a 15-20cm o use entrada manual.');
+          return;
+        }
+
+        const match = Domain.SerialMatcher.match(texts, AppState.items);
+        if (match) {
+          UI.applyScanMatch(match, 'camera_barcode');
+        } else {
+          AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: texts.join(' | ') });
+          UI.displayScanResult('danger', `⛔ NO ESTÁ EN LA LISTA (${texts.join(', ')}) — NO RECOLECTAR`);
+        }
+      } catch (err) {
+        UI.displayScanResult('danger', 'Error de decodificación: ' + err.message);
+      }
+    };
+
+    const handleManual = () => {
+      const input = document.getElementById('inputManualSerial');
+      const val = input.value.trim();
+      if (!val) return;
+      if (!AppState.items.length) {
+        UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
+        return;
+      }
+
+      const match = Domain.SerialMatcher.match([val], AppState.items);
+      if (match) {
+        UI.applyScanMatch(match, 'manual_entry');
+        input.value = '';
+      } else {
+        AppState.rejectionAttempts.push({ at: new Date().toISOString(), text: val });
+        UI.displayScanResult('danger', `⛔ LA SERIE "${val}" NO PERTENECE A LA ORDEN — NO RECOLECTAR`);
+      }
+    };
+
+    document.getElementById('btnValidateManual').onclick = handleManual;
+    document.getElementById('inputManualSerial').onkeydown = e => { if (e.key === 'Enter') handleManual(); };
+  },
+
+  async decodeBarcodesFromImage(file) {
+    const results = new Set();
+    const bitmap = await createImageBitmap(file);
+
+    // 1. Detección nativa del navegador (Android Chrome / iOS 17+)
+    if ('BarcodeDetector' in window) {
+      try {
+        const detector = new BarcodeDetector({ formats: ['code_128', 'code_39', 'qr_code', 'data_matrix'] });
+        const detected = await detector.detect(bitmap);
+        detected.forEach(d => results.add(d.rawValue));
+      } catch (e) { }
+    }
+
+    // 2. Detección con ZXing MultiFormat y rotaciones
+    if (!results.size && window.ZXing) {
+      const hints = new Map();
+      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+      const reader = new ZXing.BrowserMultiFormatReader(hints);
+
+      for (const rot of [0, 90, 180, 270]) {
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+        const w = Math.round(bitmap.width * scale);
+        const h = Math.round(bitmap.height * scale);
+
+        canvas.width = (rot === 90 || rot === 270) ? h : w;
+        canvas.height = (rot === 90 || rot === 270) ? w : h;
+        const ctx = canvas.getContext('2d');
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate((rot * Math.PI) / 180);
+        ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+
+        try {
+          const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.85));
+          if (res && res.getText()) {
+            results.add(res.getText());
+            break;
+          }
+        } catch (err) { }
+      }
+    }
+
+    bitmap.close();
+    return Array.from(results);
+  },
+
+  bindCosmeticPhotoCapture() {
+    document.getElementById('inputCameraCosmetic').onchange = async e => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file || !UI.activePhotoItem) return;
+
+      const item = UI.activePhotoItem;
+      UIFeedback.toast('Comprimiendo imagen y subiendo a S3...', 'info');
+
+      try {
+        const compressed = await ClientImageCompressorAdapter.compressImage(
+          file,
+          ITAD_COSMETIC_PHOTO.maxPx,
+          ITAD_COSMETIC_PHOTO.quality,
+          { maxBytes: ITAD_COSMETIC_PHOTO.maxBytes }
+        );
+        const filename = `${item.serial.normalized}_cosmetic_${Date.now()}.jpg`;
+
+        // Subida directa al bucket Supabase (Cero base64 en la base de datos)
+        const uploadRes = await AppState.storage.uploadPhoto(compressed.blob, filename);
+
+        item.attachPhoto({
+          storagePath: uploadRes.storagePath,
+          publicUrl: uploadRes.publicUrl,
+          sizeBytes: compressed.compressedSize,
+          isLocalFallback: !!uploadRes.isLocalFallback
+        });
+
+        persistActiveOrder();
+        UI.renderReceptionTable();
+        const where = uploadRes.isLocalFallback
+          ? 'solo en este navegador (conecte Supabase para nube)'
+          : `Supabase · ${uploadRes.storagePath}`;
+        UIFeedback.toast(`Foto guardada (${(compressed.compressedSize / 1024).toFixed(0)} KB) — ${where}`, 'success');
+      } catch (err) {
+        UIFeedback.toast('Error al almacenar foto: ' + err.message, 'danger');
+      }
+    };
+  },
+
+  displayScanResult(type, message, item = null) {
+    const area = document.getElementById('scanResultArea');
+    const badgeClass = type === 'success' ? 'badge-success' : type === 'warning' ? 'badge-warning' : 'badge-danger';
+
+    let photoSection = '';
+    if (item) {
+      photoSection = `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-small" onclick="UI.triggerCosmeticPhoto('${item.serial.normalized}')">
+            📷 ${item.photoRef ? 'Repetir Foto Estética' : 'Tomar Foto Estética'}
+          </button>
+          <input type="text" placeholder="Nota estética (rayones, golpes, rajadura...)" 
+                 value="${item.cosmeticNote}" 
+                 onchange="UI.updateCosmeticNote('${item.serial.normalized}', this.value)"
+                 style="font-size:12px;flex:1;min-width:180px;">
+        </div>
+      `;
+    }
+
+    area.innerHTML = `
+      <div style="padding:12px;border-radius:8px;background:var(--${type}-bg);border:1px solid var(--${type});">
+        <span class="badge ${badgeClass}">${message}</span>
+        ${photoSection}
+      </div>
+    `;
+  },
+
+  triggerCosmeticPhoto(serialKey) {
+    this.activePhotoItem = AppState.items.find(i => i.serial.normalized === serialKey);
+    document.getElementById('inputCameraCosmetic').click();
+  },
+
+  updateCosmeticNote(serialKey, note) {
+    const item = AppState.items.find(i => i.serial.normalized === serialKey);
+    if (item) {
+      item.cosmeticNote = note;
+      persistActiveOrder();
+    }
+  },
+
+  vibrateDevice() {
+    if (navigator.vibrate) navigator.vibrate([15, 30, 15]);
+  },
+
+  bindBlanccoBatchProcessing() {
+    document.getElementById('inputBlanccoPdfs').onchange = async e => {
+      const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      e.target.value = '';
+      if (!files.length) return;
+
+      const pBar = document.getElementById('uploadProgressBar');
+      const pFill = document.getElementById('uploadProgressFill');
+      pBar.style.display = 'block';
+
+      let count = 0;
+      for (const file of files) {
+        try {
+          const buf = await file.arrayBuffer();
+          const parsed = await BlanccoPdfParserAdapter.parse(buf);
+
+          if (parsed.serial) {
+            const item = AppState.items.find(i => i.serial.equals(parsed.serial));
+            const newPdfName = `${parsed.serial}.pdf`;
+
+            // Subir PDF renombrado al bucket itad-pdfs
+            const pdfRef = await AppState.storage.uploadPdf(buf, newPdfName);
+            AppState.blanccoRecords.set(parsed.serial, { ...parsed, pdfRef, originalBuffer: buf });
+
+            if (item) {
+              item.attachBlancco(parsed, pdfRef);
+            }
+          }
+        } catch (err) {
+          console.error(`Error procesando ${file.name}:`, err);
+        }
+
+        count++;
+        pFill.style.width = `${Math.round((count / files.length) * 100)}%`;
+      }
+
+      setTimeout(() => { pBar.style.display = 'none'; pFill.style.width = '0%'; }, 700);
+      UI.renderWipingTable();
+      UIFeedback.toast(`Lote completado: ${count} reportes sincronizados`, 'success');
+    };
+
+    // Registro No Power On
+    document.getElementById('btnAddNoPowerRecord').onclick = () => {
+      const serialKey = document.getElementById('selectNoPowerAsset').value;
+      const hddSerial = document.getElementById('inputNoPowerHdd').value.trim();
+      const hddSize = document.getElementById('inputNoPowerSize').value.trim();
+
+      if (!serialKey || !hddSerial) {
+        UIFeedback.toast('Seleccione un equipo e indique la serie del disco para destrucción', 'warning');
+        return;
+      }
+
+      const item = AppState.items.find(i => i.serial.normalized === serialKey);
+      if (item) {
+        item.markNoPowerOn(hddSerial, hddSize || '512GB');
+        UI.renderWipingTable();
+        UI.renderReceptionTable();
+        UIFeedback.toast(`Equipo ${item.serial.raw} registrado para destrucción de disco`, 'warning');
+      }
+    };
+  },
+
+  wireSignaturePad(canvasId, clearButtonId, signatureStore) {
+    const canvas = document.getElementById(canvasId);
+    const clearBtn = document.getElementById(clearButtonId);
+    if (!canvas || !clearBtn) return;
+
+    let drawing = false;
+
+    const redraw = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width) return;
+      canvas.width = rect.width * 2;
+      canvas.height = 300;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (signatureStore.get()) {
+        const img = new Image();
+        img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        img.src = signatureStore.get();
+      }
+    };
+
+    setTimeout(redraw, 200);
+    window.addEventListener('resize', redraw);
+
+    const getPos = e => {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.clientX ?? e.touches?.[0]?.clientX;
+      const clientY = e.clientY ?? e.touches?.[0]?.clientY;
+      return [
+        (clientX - rect.left) * (canvas.width / rect.width),
+        (clientY - rect.top) * (canvas.height / rect.height)
+      ];
+    };
+
+    canvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      drawing = true;
+      canvas.setPointerCapture(e.pointerId);
+      const ctx = canvas.getContext('2d');
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#000000';
+      const [x, y] = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    });
+
+    canvas.addEventListener('pointermove', e => {
+      if (!drawing) return;
+      const ctx = canvas.getContext('2d');
+      const [x, y] = getPos(e);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    });
+
+    const stopDrawing = () => {
+      if (!drawing) return;
+      drawing = false;
+      signatureStore.set(canvas.toDataURL('image/png'));
+    };
+    canvas.addEventListener('pointerup', stopDrawing);
+    canvas.addEventListener('pointercancel', stopDrawing);
+
+    clearBtn.onclick = () => {
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      signatureStore.set(null);
+    };
+  },
+
+  bindSignaturePads() {
+    UI.wireSignaturePad('padClient', 'btnClearClientPad', {
+      get: () => AppState.signerClient.signature,
+      set: v => { AppState.signerClient.signature = v; }
+    });
+    UI.wireSignaturePad('padXsi', 'btnClearXsiPad', {
+      get: () => AppState.signerXsi.signature,
+      set: v => { AppState.signerXsi.signature = v; }
+    });
+
+    document.getElementById('signerClientDpi').oninput = e => {
+      const dpiObj = new Domain.DpiGuatemala(e.target.value);
+      e.target.value = dpiObj.formatted();
+      AppState.signerClient.dpi = e.target.value;
+    };
+    document.getElementById('signerXsiDpi').oninput = e => {
+      const dpiObj = new Domain.DpiGuatemala(e.target.value);
+      e.target.value = dpiObj.formatted();
+      AppState.signerXsi.dpi = e.target.value;
+    };
+
+    document.getElementById('btnGenerateActaPdf').onclick = () => UI.generateActa(false);
+    document.getElementById('btnShareActa').onclick = () => UI.generateActa(true);
+  },
+
+  applyScanMatch(match, via) {
+    const confirmNeeded = match.matchType !== 'EXACT' && match.confidence < 1;
+    const label = `${match.item.serial.raw} (${match.item.model}) — ${match.matchType}`;
+
+    const finalize = () => {
+      match.item.markReceived(via);
+      UI.vibrateDevice();
+      UI.displayScanResult('success', `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model})`, match.item);
+      UI.renderReceptionTable();
+    };
+
+    if (confirmNeeded) {
+      UI.displayScanResult('warning', `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`, match.item);
+      UIFeedback.modal({
+        title: 'Confirmar serie',
+        message: `¿Marcar como recibido?\n\nSerie en orden: ${match.item.serial.raw}\nTipo: ${match.matchType}`,
+        onConfirm: finalize
+      });
+      return;
+    }
+    finalize();
+  },
+
+  bindCloudStorageModal() {
+    const overlay = document.getElementById('modalConfig');
+    const statusEl = document.getElementById('cfgSupabaseStatus');
+    const loadFields = () => {
+      const hub = getItadSupabaseHub();
+      if (!localStorage.getItem('itad_sb_url')) {
+        localStorage.setItem('itad_sb_url', ITAD_SB_DEFAULT_URL);
+        hub.reloadFromStorage();
+      }
+      document.getElementById('cfgSupabaseUrl').value = hub.url || ITAD_SB_DEFAULT_URL;
+      document.getElementById('cfgSupabaseKey').value = hub.key;
+      document.getElementById('cfgBucketPhotos').value = hub.bucketPhotos;
+      document.getElementById('cfgBucketPdfs').value = hub.bucketPdfs;
+      statusEl.textContent = hub.lastProbe?.message || '';
+    };
+
+    document.getElementById('btnCloudConfig').onclick = () => {
+      loadFields();
+      overlay.classList.remove('hidden');
+    };
+    document.getElementById('btnCloseConfig').onclick = () => overlay.classList.add('hidden');
+    document.getElementById('btnSyncSupabaseNow').onclick = () => UI.syncAllOrdersToSupabase();
+
+    document.getElementById('btnTestConfig').onclick = async () => {
+      localStorage.setItem('itad_sb_url', document.getElementById('cfgSupabaseUrl').value.trim() || ITAD_SB_DEFAULT_URL);
+      localStorage.setItem('itad_sb_key', document.getElementById('cfgSupabaseKey').value.trim());
+      getItadSupabaseHub().reloadFromStorage();
+      AppState.storage = new SupabaseStorageAdapter();
+      statusEl.textContent = 'Probando…';
+      const probe = await getItadSupabaseHub().probe();
+      statusEl.textContent = probe.message || (probe.ok ? 'OK' : 'Error');
+      UI.updateCloudIndicator();
+      UIFeedback.toast(probe.message, probe.ok ? (probe.warn ? 'warning' : 'success') : 'danger');
+    };
+    document.getElementById('btnSaveConfig').onclick = async () => {
+      localStorage.setItem('itad_sb_url', document.getElementById('cfgSupabaseUrl').value.trim() || ITAD_SB_DEFAULT_URL);
+      localStorage.setItem('itad_sb_key', document.getElementById('cfgSupabaseKey').value.trim());
+      localStorage.setItem('itad_sb_bphoto', document.getElementById('cfgBucketPhotos').value.trim() || 'itad-photos');
+      localStorage.setItem('itad_sb_bpdf', document.getElementById('cfgBucketPdfs').value.trim() || 'itad-pdfs');
+      getItadSupabaseHub().reloadFromStorage();
+      AppState.storage = new SupabaseStorageAdapter();
+      const probe = await getItadSupabaseHub().probe();
+      statusEl.textContent = probe.message || '';
+      UI.updateCloudIndicator();
+      overlay.classList.add('hidden');
+      UIFeedback.toast(
+        probe.ok ? 'Supabase guardado y conectado' : 'Guardado; revise la anon key o el SQL de tablas',
+        probe.ok ? 'success' : 'warning'
+      );
+    };
+  },
+
+  cloudSyncHint: '',
+
+  setCloudSyncHint(text) {
+    UI.cloudSyncHint = text || '';
+    UI.updateCloudIndicator();
+  },
+
+  updateCloudIndicator() {
+    const dot = document.getElementById('cloudIndicator');
+    const label = document.getElementById('cloudLabel');
+    const hub = getItadSupabaseHub();
+    if (hub.isConnected()) {
+      dot.classList.add('online');
+      const base = hub.lastProbe?.ok ? 'Supabase conectado' : 'Supabase (probar en ⚙)';
+      label.textContent = UI.cloudSyncHint ? `${base} · ${UI.cloudSyncHint}` : base;
+    } else {
+      dot.classList.remove('online');
+      label.textContent = 'Modo local — CONFIGURAR-SUPABASE.bat';
+    }
+  },
+
+  async syncAllOrdersToSupabase() {
+    persistActiveOrder();
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected()) {
+      UIFeedback.toast('Pegue la anon key (☁) o use CONFIGURAR-SUPABASE.bat', 'warning');
+      return;
+    }
+    const res = await hub.syncAllLabOrders(OrderStore.orders);
+    if (res.ok) {
+      UI.setCloudSyncHint(`${res.synced} ord · ${res.assets || 0} equipos`);
+      UIFeedback.toast(
+        `Supabase: ${res.synced} orden(es), ${res.assets || 0} equipos en catálogo`,
+        'success'
+      );
+    } else {
+      UIFeedback.toast(res.error || 'Error al sincronizar', 'danger');
+    }
+  },
+
+  async fetchOrderCreationFromSupabase() {
+    const ordRaw = orderCreationFieldRealValue('orderCreateProjectOrder')
+      || (document.getElementById('orderCreateProjectOrder')?.value || '').trim();
+    const mined = mineOrdPoFromText(ordRaw);
+    const ord = (mined.projectOrder || ordRaw).toUpperCase();
+    if (!/^ORD\d+$/.test(ord)) {
+      UIFeedback.toast('Escriba ORD##### en Project Order (texto real, no gris) y pulse ☁ ORD', 'warning');
+      return;
+    }
+    if (!getItadSupabaseHub().isConnected()) {
+      UIFeedback.toast('Configure Supabase (pill ☁ arriba) con la anon key del proyecto', 'warning');
+      return;
+    }
+    const res = await getItadSupabaseHub().fetchIntakeByProjectOrder(ord);
+    if (!res.ok) {
+      UIFeedback.toast(res.error, 'warning');
+      return;
+    }
+    const row = res.data;
+    if (row.memo_text) {
+      document.getElementById('orderCreateImportText').value = row.memo_text;
+    }
+    if (row.form_json && typeof row.form_json === 'object') {
+      applyOrderCreationParsed(row.form_json);
+    } else if (row.memo_text) {
+      syncOrderCreationFormFromSource({ silent: true, source: 'memo' });
+    }
+    if (row.tc_id) {
+      const badge = document.getElementById('orderCreateTcBadge');
+      badge.style.display = 'inline-flex';
+      badge.textContent = row.tc_id;
+    }
+    UI.renderOrderCreatePreview();
+    UIFeedback.toast(`Cargado desde Supabase: ${ord}`, 'success');
+  },
+
+  clearLoadedOrderInventory() {
+    if (OrderStore.activeOrderId) {
+      OrderStore.deleteOrder(OrderStore.activeOrderId);
+    } else {
+      AppState.items = [];
+      AppState.rejectionAttempts = [];
+      resetWorkflowState();
+    }
+    document.getElementById('scanResultArea').innerHTML = '';
+    UI.showModule('tab-reception');
+    UI.renderReceptionTable();
+    UI.renderWipingTable();
+    UI.updateOpenOrdersBadge();
+    UIFeedback.toast('Orden activa eliminada de la lista', 'info');
+  },
+
+  generateServiceLoadOrderPdf() {
+    if (!AppState.items.length) {
+      UIFeedback.toast('Cargue primero el inventario de la orden', 'warning');
+      return;
+    }
+    if (typeof window.jspdf === 'undefined') {
+      UIFeedback.toast('jsPDF no cargó. Revise internet y recargue.', 'danger');
+      return;
+    }
+
+    const tcId = ensureServiceOrderId();
+    persistActiveOrder();
+    UI.updateServiceOrderBadge();
+    UI.renderWorkflowChrome();
+    downloadXsiServiceOrderPdf({
+      tcId,
+      meta: AppState.orderMetadata,
+      items: AppState.items,
+      equipmentLines: []
+    });
+    UIFeedback.toast(`Descargada ${tcId}`, 'success');
+  },
+
+  createXsiServiceOrderFromCreation() {
+    if (typeof window.jspdf === 'undefined') {
+      UIFeedback.toast('jsPDF no cargó. Revise internet y recargue.', 'danger');
+      return;
+    }
+    resolveOrderCreationForm();
+    let form = mergeFormWithMined(readOrderCreationForm());
+    if (!orderCreationReadyForTc(form)) {
+      UIFeedback.toast(
+        'Faltan datos reales en el formulario. Pulse «Llenar formulario» (memo arriba) o escriba ORD/PO — los textos grises son solo ejemplos.',
+        'warning'
+      );
+      return;
+    }
+
+    OrderStore.persistActive();
+    const meta = orderCreationToOrderMetadata(form);
+    OrderStore.createOrder({
+      orderMetadata: meta,
+      items: [],
+      label: form.projectOrder || form.poReference || 'ITAD'
+    });
+
+    const tcId = ensureServiceOrderId();
+    persistActiveOrder();
+    downloadXsiServiceOrderPdf({
+      tcId,
+      meta: AppState.orderMetadata,
+      items: [],
+      equipmentLines: form.equipmentLines
+    });
+
+    const badge = document.getElementById('orderCreateTcBadge');
+    badge.style.display = 'inline-flex';
+    badge.textContent = tcId;
+
+    UI.updateServiceOrderBadge();
+    UI.renderWorkflowChrome();
+    UI.updateOpenOrdersBadge();
+    UI.renderReceptionOrderSelector();
+
+    const memoText = (document.getElementById('orderCreateImportText')?.value || '').trim();
+    if (getItadSupabaseHub().isConnected()) {
+      getItadSupabaseHub().upsertOrderIntake({ tcId, form, memoText }).then(syncRes => {
+        if (!syncRes.ok) {
+          UIFeedback.toast(`TC local OK; Supabase: ${syncRes.error}`, 'warning');
+        }
+      });
+    }
+
+    UIFeedback.toast(`Orden XSI creada: ${tcId} — aparece en Órdenes abiertas`, 'success');
+  },
+
+  updateOrderCreateTcBadge() {
+    const id = AppState.orderMetadata.serviceOrderId;
+    const badge = document.getElementById('orderCreateTcBadge');
+    if (!badge) return;
+    if (id) {
+      badge.style.display = 'inline-flex';
+      badge.textContent = id;
+    }
+  },
+
+  updateServiceOrderBadge() {
+    const badge = document.getElementById('serviceOrderBadge');
+    const id = AppState.orderMetadata.serviceOrderId;
+    if (id) {
+      badge.style.display = 'inline-flex';
+      badge.textContent = id;
+      badge.className = 'badge badge-success';
+    } else {
+      badge.style.display = 'none';
+      badge.textContent = '';
+    }
+  },
+
+  bindExportActions() {
+    document.getElementById('btnClearOrderInventory').onclick = () => {
+      if (!AppState.items.length) return;
+      UIFeedback.modal({
+        title: 'Eliminar inventario',
+        message: '¿Quitar la orden cargada y los escaneos de recepción? No borra PDFs Blancco ni la sesión completa.',
+        onConfirm: () => UI.clearLoadedOrderInventory()
+      });
+    };
+
+    document.getElementById('btnGenerateServiceOrder').onclick = () => UI.generateServiceLoadOrderPdf();
+
+    document.getElementById('btnResetSession').onclick = () => {
+      UIFeedback.modal({
+        title: 'Nueva sesión',
+        message: '¿Borrar TODAS las órdenes abiertas, escaneos y reportes en este navegador?',
+        onConfirm: () => {
+          OrderStore.orders = [];
+          OrderStore.activeOrderId = null;
+          OrderStore.applyToAppState(null);
+          OrderStore.saveAll();
+          AppState.blanccoRecords.clear();
+          AppState.signerClient = { name: '', dpi: '', signature: null };
+          AppState.signerXsi = { name: '', dpi: '', signature: null };
+          document.getElementById('signerClientName').value = '';
+          document.getElementById('signerClientDpi').value = '';
+          document.getElementById('signerXsiName').value = '';
+          document.getElementById('signerXsiDpi').value = '';
+          document.getElementById('receptionNotes').value = '';
+          document.getElementById('scanResultArea').innerHTML = '';
+          UI.showModule('tab-reception');
+          UI.renderReceptionTable();
+          UI.renderWipingTable();
+          UI.updateOpenOrdersBadge();
+          UIFeedback.toast('Todas las órdenes eliminadas', 'info');
+        }
+      });
+    };
+
+    document.getElementById('searchTable').oninput = () => UI.renderReceptionTable();
+    document.getElementById('filterStatus').onchange = () => UI.renderReceptionTable();
+
+    document.getElementById('btnDownloadRenamedZip').onclick = async () => {
+      if (!AppState.blanccoRecords.size) {
+        UIFeedback.toast('No hay PDFs Blancco procesados', 'warning');
+        return;
+      }
+      const zip = new JSZip();
+      AppState.blanccoRecords.forEach((rec, serial) => {
+        if (rec.originalBuffer) zip.file(`${serial}.pdf`, rec.originalBuffer);
+      });
+      const blob = await zip.generateAsync({ type: 'blob' });
+      UI.downloadBlob(blob, `blancco-renombrados-${Date.now()}.zip`);
+    };
+
+    document.getElementById('btnExportItadExcel').onclick = () => UI.exportItadWorkbook();
+    document.getElementById('btnExportConciliationCsv').onclick = () => UI.exportConciliationCsv();
+  },
+
+  downloadBlob(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  },
+
+  filteredReceptionItems() {
+    const q = (document.getElementById('searchTable').value || '').trim().toUpperCase();
+    const st = document.getElementById('filterStatus').value;
+    return AppState.items.filter(item => {
+      if (st === 'RECEIVED' && item.status !== 'RECEIVED') return false;
+      if (st === 'PENDING' && item.status !== 'PENDING') return false;
+      if (st === 'NO_PHOTO' && item.photoRef) return false;
+      if (!q) return true;
+      const hay = `${item.serial.raw} ${item.make} ${item.model}`.toUpperCase();
+      return hay.includes(q);
+    });
+  },
+
+  renderReceptionTable() {
+    const meta = AppState.orderMetadata;
+    const metaEl = document.getElementById('orderMetaDisplay');
+    const hasOrder = AppState.items.length > 0;
+    document.getElementById('btnClearOrderInventory').disabled = !hasOrder;
+    document.getElementById('btnGenerateServiceOrder').disabled = !hasOrder;
+    UI.renderWorkflowChrome();
+    UI.renderReceptionOrderSelector();
+
+    if (hasOrder) {
+      const tcPart = meta.serviceOrderId ? ` · ${meta.serviceOrderId}` : '';
+      metaEl.textContent = `${meta.customer} · ${meta.project} · ${meta.pickupDate} · ${meta.address}${tcPart}`;
+    } else {
+      metaEl.textContent = 'Cargue la orden del cliente para validar estrictamente las series autorizadas.';
+    }
+    UI.updateServiceOrderBadge();
+
+    const received = AppState.items.filter(i => i.status === 'RECEIVED');
+    const photos = AppState.items.filter(i => i.photoRef).length;
+    document.getElementById('kpiTotalOrder').textContent = String(AppState.items.length);
+    document.getElementById('kpiReceived').textContent = String(received.length);
+    document.getElementById('kpiPending').textContent = String(AppState.items.length - received.length);
+    document.getElementById('kpiPhotos').textContent = String(photos);
+
+    const tbody = document.querySelector('#tableReception tbody');
+    tbody.innerHTML = '';
+    UI.filteredReceptionItems().forEach(item => {
+      const tr = document.createElement('tr');
+      const statusBadge = item.status === 'RECEIVED'
+        ? '<span class="badge badge-success">Recibido</span>'
+        : '<span class="badge badge-muted">Pendiente</span>';
+      const photoCell = item.photoRef
+        ? `<img class="photo-preview" src="${item.photoRef.publicUrl}" alt="foto" onclick="window.open('${item.photoRef.publicUrl}','_blank')">`
+        : '—';
+      tr.innerHTML = `
+        <td>${item.itemNo}</td>
+        <td class="code-mono">${item.serial.raw}</td>
+        <td>${item.make}<br><small style="color:var(--text-muted)">${item.model}</small></td>
+        <td>${statusBadge}</td>
+        <td>${photoCell}</td>
+        <td>${item.cosmeticNote || '—'}</td>
+        <td><button type="button" class="btn btn-secondary btn-small" data-serial="${item.serial.normalized}">📷 Foto</button></td>
+      `;
+      tr.querySelector('button').onclick = () => UI.triggerCosmeticPhoto(item.serial.normalized);
+      tbody.appendChild(tr);
+    });
+
+    const sel = document.getElementById('selectNoPowerAsset');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">Seleccione equipo recibido...</option>';
+    received.forEach(i => {
+      const opt = document.createElement('option');
+      opt.value = i.serial.normalized;
+      opt.textContent = `${i.serial.raw} — ${i.model}`;
+      sel.appendChild(opt);
+    });
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+    persistActiveOrder();
+    UI.updateOpenOrdersBadge();
+  },
+
+  renderWipingTable() {
+    let pdfCount = 0;
+    let wipeOk = 0;
+    let wipeFail = 0;
+    let uploaded = 0;
+    const tbody = document.querySelector('#tableWiping tbody');
+    tbody.innerHTML = '';
+
+    const rows = [];
+    AppState.blanccoRecords.forEach((rec, serial) => {
+      pdfCount++;
+      if (rec.pdfRef && !rec.pdfRef.isLocalFallback) uploaded++;
+      (rec.disks || []).forEach((d, idx) => {
+        if (d.wipeStatus === 'Sí') wipeOk++; else wipeFail++;
+        rows.push({ serial, rec, disk: d, diskIdx: idx });
+      });
+      if (!(rec.disks || []).length) rows.push({ serial, rec, disk: null, diskIdx: 0 });
+    });
+
+    AppState.items.filter(i => i.batteryStatus === 'No Power On').forEach(item => {
+      item.disks.forEach((d, idx) => {
+        rows.push({ serial: item.serial.raw, rec: item, disk: d, diskIdx: idx, fromItem: true });
+      });
+    });
+
+    rows.forEach(({ serial, rec, disk }) => {
+      const tr = document.createElement('tr');
+      const pdfUrl = rec.pdfRef ? rec.pdfRef.publicUrl : '';
+      tr.innerHTML = `
+        <td class="code-mono">${serial}</td>
+        <td>${rec.model || '—'}</td>
+        <td class="code-mono">${disk ? disk.serial : '—'}</td>
+        <td>${disk ? disk.size : '—'}</td>
+        <td>${disk ? disk.wipeStatus : '—'}</td>
+        <td>${disk ? disk.destruction : '—'}</td>
+        <td>${rec.batteryStatus || '—'}</td>
+        <td>${rec.pdfRef ? (rec.pdfRef.isLocalFallback ? 'Local' : 'S3') : '—'}</td>
+        <td>${pdfUrl ? `<a href="${pdfUrl}" target="_blank" rel="noopener">Ver</a>` : '—'}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('kpiPdfCount').textContent = String(pdfCount);
+    document.getElementById('kpiWipeOk').textContent = String(wipeOk);
+    document.getElementById('kpiWipeFail').textContent = String(wipeFail);
+    document.getElementById('kpiPdfUploaded').textContent = String(uploaded);
+    persistActiveOrder();
+  },
+
+  renderAuditPreview() {
+    const tbody = document.querySelector('#tablePreviewExcel tbody');
+    tbody.innerHTML = '';
+    AppState.items.forEach(item => {
+      const d1 = item.disks[0];
+      const d2 = item.disks[1];
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>Laptop</td>
+        <td>${item.make}</td>
+        <td>${item.model}</td>
+        <td class="code-mono">${item.serial.raw}</td>
+        <td>—</td>
+        <td>${item.cpu || '—'}</td>
+        <td>${item.ram || '—'}</td>
+        <td>${item.batteryStatus || '—'}</td>
+        <td>${item.finalStatus || '—'}</td>
+        <td class="code-mono">${d1 ? d1.serial : '—'}</td>
+        <td>${d1 ? d1.wipeStatus : '—'}</td>
+        <td>${d1 ? d1.destruction : '—'}</td>
+        <td class="code-mono">${d2 ? d2.serial : '—'}</td>
+        <td>${d2 ? d2.wipeStatus : '—'}</td>
+        <td>${d2 ? d2.destruction : '—'}</td>
+        <td>${item.cosmeticNote || ''}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    UI.renderConciliationAlerts();
+  },
+
+  renderConciliationAlerts() {
+    const el = document.getElementById('conciliationAlerts');
+    const alerts = [];
+    AppState.items.forEach(i => {
+      if (i.status === 'RECEIVED' && !AppState.blanccoRecords.has(i.serial.normalized) && i.batteryStatus !== 'No Power On') {
+        alerts.push(`Recibido sin Blancco: ${i.serial.raw}`);
+      }
+    });
+    AppState.blanccoRecords.forEach((_, serial) => {
+      const found = AppState.items.find(i => i.serial.normalized === Domain.SerialMatcher.normalize(serial));
+      if (!found) alerts.push(`Blancco sin orden: ${serial}`);
+    });
+    el.innerHTML = alerts.length
+      ? alerts.map(a => `<div class="badge badge-warning" style="display:block;margin:6px 0;">${a}</div>`).join('')
+      : '<div class="badge badge-success">Sin discrepancias críticas</div>';
+  },
+
+  async exportItadWorkbook() {
+    if (!AppState.items.length) {
+      UIFeedback.toast('Cargue la orden primero', 'warning');
+      return;
+    }
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Laptops');
+    const headers = ['Device', 'Make', 'Model', 'Serial Number', 'Asset Tag#', 'CPU / Processor', 'RAM', 'Battery', 'Final Status', 'HDD #1 Serial', 'HDD #1 Wipe', 'HDD #1 Destruction', 'HDD #2 Serial', 'HDD #2 Wipe', 'HDD #2 Destruction', 'Comments'];
+    ws.addRow(headers);
+    AppState.items.forEach(item => {
+      const d1 = item.disks[0];
+      const d2 = item.disks[1];
+      ws.addRow([
+        'Laptop', item.make, item.model, item.serial.raw, '',
+        item.cpu, item.ram, item.batteryStatus, item.finalStatus,
+        d1 ? d1.serial : '', d1 ? d1.wipeStatus : '', d1 ? d1.destruction : '',
+        d2 ? d2.serial : '', d2 ? d2.wipeStatus : '', d2 ? d2.destruction : '',
+        item.cosmeticNote
+      ]);
+    });
+    const buf = await wb.xlsx.writeBuffer();
+    UI.downloadBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `ITAD-export-${Date.now()}.xlsx`);
+    UIFeedback.toast('Excel ITAD descargado', 'success');
+  },
+
+  exportConciliationCsv() {
+    const lines = ['Serie,En Orden,Recibido,Blancco,Foto,Estado Final'];
+    AppState.items.forEach(i => {
+      const hasBlancco = AppState.blanccoRecords.has(i.serial.normalized) ? 'Sí' : 'No';
+      lines.push([
+        i.serial.raw,
+        'Sí',
+        i.status === 'RECEIVED' ? 'Sí' : 'No',
+        hasBlancco,
+        i.photoRef ? 'Sí' : 'No',
+        i.finalStatus
+      ].join(','));
+    });
+    UI.downloadBlob(new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' }), `conciliacion-${Date.now()}.csv`);
+  },
+
+  async generateActa(shareViaOs = false) {
+    if (!AppState.items.length) {
+      UIFeedback.toast('Cargue primero los activos de la orden', 'warning');
+      return;
+    }
+    const received = AppState.items.filter(i => i.status === 'RECEIVED');
+    if (!received.length) {
+      UIFeedback.toast('No se ha recibido ningún equipo aún en la lista', 'warning');
+      return;
+    }
+
+    const clientName = document.getElementById('signerClientName').value.trim();
+    if (!clientName) {
+      UIFeedback.toast('Ingrese el nombre del representante del cliente', 'warning');
+      return;
+    }
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'mm', format: 'letter' });
+    const meta = AppState.orderMetadata;
+    let y = 18;
+    doc.setFontSize(14);
+    doc.text('ACTA DE RECEPCIÓN Y CUSTODIA — ITAD CORE', 14, y);
+    y += 8;
+    doc.setFontSize(10);
+    doc.text(`Cliente: ${meta.customer}`, 14, y); y += 5;
+    doc.text(`Proyecto: ${meta.project}`, 14, y); y += 5;
+    doc.text(`Fecha: ${meta.pickupDate}`, 14, y); y += 5;
+    doc.text(`Representante: ${clientName}`, 14, y); y += 5;
+    doc.text(`DPI cliente: ${document.getElementById('signerClientDpi').value || '—'}`, 14, y); y += 5;
+    const xsiName = document.getElementById('signerXsiName').value.trim() || '—';
+    doc.text(`Técnico XSI: ${xsiName}`, 14, y); y += 5;
+    doc.text(`DPI técnico: ${document.getElementById('signerXsiDpi').value || '—'}`, 14, y); y += 8;
+    doc.text(`Equipos recibidos: ${received.length} de ${AppState.items.length}`, 14, y); y += 6;
+
+    received.slice(0, 35).forEach((item, idx) => {
+      if (y > 260) { doc.addPage(); y = 18; }
+      doc.text(`${idx + 1}. ${item.serial.raw} — ${item.make} ${item.model}`, 14, y);
+      y += 5;
+    });
+    if (received.length > 35) {
+      doc.text(`… y ${received.length - 35} equipos más (ver sistema ITAD).`, 14, y);
+      y += 5;
+    }
+
+    const notes = document.getElementById('receptionNotes').value.trim();
+    if (notes) { doc.text(`Observaciones: ${notes}`, 14, y + 4); y += 10; }
+
+    if (y > 220) { doc.addPage(); y = 18; }
+
+    if (AppState.signerClient.signature) {
+      doc.addImage(AppState.signerClient.signature, 'PNG', 14, y + 2, 70, 25);
+      doc.text('Firma representante cliente', 14, y + 30);
+    }
+    if (AppState.signerXsi.signature) {
+      doc.addImage(AppState.signerXsi.signature, 'PNG', 110, y + 2, 70, 25);
+      doc.text('Firma técnico XSI', 110, y + 30);
+    }
+    if (AppState.signerClient.signature || AppState.signerXsi.signature) {
+      y += 36;
+    }
+
+    const filename = `acta-recepcion-${Date.now()}.pdf`;
+    if (shareViaOs && navigator.share) {
+      const blob = doc.output('blob');
+      try {
+        await navigator.share({ files: [new File([blob], filename, { type: 'application/pdf' })], title: 'Acta ITAD' });
+        return;
+      } catch (e) { /* fallback download */ }
+    }
+    doc.save(filename);
+    UIFeedback.toast('Acta PDF generada', 'success');
+  }
+};
+
+async function bootstrapItadApp() {
+  if (!localStorage.getItem('itad_sb_url')) {
+    localStorage.setItem('itad_sb_url', ITAD_SB_DEFAULT_URL);
+  }
+  const hub = getItadSupabaseHub();
+  const fromVercelEnv = hub.applyRuntimeConfig();
+  const loadedFile = await hub.bootstrapFromLocalFile();
+  if (loadedFile) hub.reloadFromStorage();
+  AppState.storage = new SupabaseStorageAdapter();
+  UI.init();
+  if (hub.isConnected()) {
+    await hub.probe();
+    UI.updateCloudIndicator();
+    hub.syncAllLabOrders(OrderStore.orders).then(res => {
+      if (res.ok && res.synced) UI.setCloudSyncHint(`${res.synced} en nube`);
+    });
+  }
+  if (fromVercelEnv && hub.isConnected()) {
+    UIFeedback.toast('Supabase conectado (deploy Vercel)', 'success');
+  } else if (loadedFile && hub.isConnected()) {
+    UIFeedback.toast('Supabase cargado desde itad-config.local.json', 'success');
+  } else if (!hub.isConnected()) {
+    console.info('[ITAD] Supabase: CONFIGURAR-SUPABASE.bat o variables en Vercel.');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  bootstrapItadApp();
+});
+</script>
+</body>
+</html>

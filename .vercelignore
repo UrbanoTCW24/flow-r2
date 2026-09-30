@@ -1,0 +1,7 @@
+*.bat
+*.cmd
+*.ps1
+.cursor/
+supabase/
+itad-config.local.json
+itad-config.example.json

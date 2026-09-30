@@ -1,0 +1,6 @@
+{
+  "supabaseUrl": "https://fmqtkuyefbawfpeijjnq.supabase.co",
+  "supabaseAnonKey": "PEGUE_AQUI_LA_ANON_PUBLIC_KEY",
+  "bucketPhotos": "itad-photos",
+  "bucketPdfs": "itad-pdfs"
+}
