@@ -1903,15 +1903,105 @@ const ITAD_COSMETIC_PHOTO = {
   maxBytes: 180 * 1024
 };
 
+/** Captura etiqueta / OCR recepción — priorizar velocidad sobre resolución del sensor */
+const ITAD_LABEL_CAPTURE = {
+  maxPx: 960,
+  quality: 0.72,
+  maxBytes: 320 * 1024,
+  ocrMaxPx: 880,
+  ocrVariantMaxPx: 720,
+  ocrQuality: 0.78,
+  /** Rotaciones OCR solo si 0°/180° no matchean */
+  ocrRotationsPrimary: [0, 180],
+  /** Vacío = labs pistola-first (más rápido). localStorage itad_label_ocr_extended_rotations=1 → [90,270] */
+  ocrRotationsFallback: (() => {
+    try {
+      if (localStorage.getItem('itad_label_ocr_extended_rotations') === '1') return [90, 270];
+    } catch (_) { /* ignore */ }
+    return [];
+  })(),
+  ocrMaxVariants: 1,
+  /** WebP en compresión cliente cuando el navegador encodea webp */
+  preferWebp: true
+};
+
+let itadWebpEncodeOk = null;
+async function itadSupportsWebpEncode() {
+  if (itadWebpEncodeOk !== null) return itadWebpEncodeOk;
+  itadWebpEncodeOk = await new Promise(resolve => {
+    try {
+      const c = document.createElement('canvas');
+      c.width = 2;
+      c.height = 2;
+      c.toBlob(b => resolve(!!(b && b.type === 'image/webp')), 'image/webp', 0.7);
+    } catch {
+      resolve(false);
+    }
+  });
+  return itadWebpEncodeOk;
+}
+
 // Adaptador: Pipeline de Optimización y Compresión de Fotos en el Cliente
 class ClientImageCompressorAdapter {
-  static canvasToJpegBlob(canvas, quality) {
-    return new Promise((resolve, reject) => {
-      canvas.toBlob(blob => {
-        if (!blob) return reject(new Error('Falla en compresión de imagen'));
-        resolve(blob);
-      }, 'image/jpeg', quality);
+  static canvasToBlobTyped(canvas, mime, quality) {
+    return new Promise(resolve => {
+      canvas.toBlob(blob => resolve(blob || null), mime, quality);
     });
+  }
+
+  static async canvasToEncodedBlob(canvas, quality, options = {}) {
+    const preferWebp = options.preferWebp !== false && ITAD_LABEL_CAPTURE.preferWebp;
+    if (preferWebp && await itadSupportsWebpEncode()) {
+      const webp = await ClientImageCompressorAdapter.canvasToBlobTyped(canvas, 'image/webp', quality);
+      if (webp && webp.size > 0) return webp;
+    }
+    const jpeg = await ClientImageCompressorAdapter.canvasToBlobTyped(canvas, 'image/jpeg', quality);
+    if (!jpeg) throw new Error('Falla en compresión de imagen');
+    return jpeg;
+  }
+
+  static canvasToJpegBlob(canvas, quality) {
+    return ClientImageCompressorAdapter.canvasToEncodedBlob(canvas, quality, { preferWebp: false });
+  }
+
+  static async compressCanvas(canvas, maxDimension = 960, quality = 0.58, options = {}) {
+    const maxBytes = options.maxBytes ?? null;
+    let { width, height } = canvas;
+    let source = canvas;
+    let bitmap = null;
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+      const scaled = document.createElement('canvas');
+      scaled.width = width;
+      scaled.height = height;
+      const sctx = scaled.getContext('2d', { alpha: false });
+      sctx.imageSmoothingEnabled = true;
+      sctx.imageSmoothingQuality = 'medium';
+      sctx.drawImage(canvas, 0, 0, width, height);
+      source = scaled;
+    }
+    let q = quality;
+    const encOpts = { preferWebp: ITAD_LABEL_CAPTURE.preferWebp };
+    let blob = await ClientImageCompressorAdapter.canvasToEncodedBlob(source, q, encOpts);
+    if (maxBytes) {
+      while (blob.size > maxBytes && q > 0.32) {
+        q = Math.max(0.32, q - 0.07);
+        blob = await ClientImageCompressorAdapter.canvasToEncodedBlob(source, q, encOpts);
+      }
+    }
+    return {
+      blob,
+      width,
+      height,
+      jpegQuality: q,
+      compressedSize: blob.size
+    };
   }
 
   static async compressImage(file, maxDimension = 960, quality = 0.58, options = {}) {
@@ -1939,11 +2029,12 @@ class ClientImageCompressorAdapter {
     bitmap.close();
 
     let q = quality;
-    let blob = await ClientImageCompressorAdapter.canvasToJpegBlob(canvas, q);
+    const encOpts = { preferWebp: options.preferWebp ?? ITAD_LABEL_CAPTURE.preferWebp };
+    let blob = await ClientImageCompressorAdapter.canvasToEncodedBlob(canvas, q, encOpts);
     if (maxBytes) {
       while (blob.size > maxBytes && q > 0.32) {
         q = Math.max(0.32, q - 0.07);
-        blob = await ClientImageCompressorAdapter.canvasToJpegBlob(canvas, q);
+        blob = await ClientImageCompressorAdapter.canvasToEncodedBlob(canvas, q, encOpts);
       }
     }
 
@@ -1958,13 +2049,25 @@ class ClientImageCompressorAdapter {
     };
   }
 
-  /** Etiquetas Lenovo (texto claro sobre fondo negro): invertir + contraste para Tesseract */
-  static async buildOcrVariantBlobs(sourceBlob, options = {}) {
+  /** Fallback main thread si el worker no está disponible */
+  static async buildOcrVariantBlobsSync(sourceBlob, options = {}) {
     let bitmap = null;
     try {
       bitmap = await createImageBitmap(sourceBlob);
-      const w = bitmap.width;
-      const h = bitmap.height;
+      let w = bitmap.width;
+      let h = bitmap.height;
+      const cap = options.maxPx ?? ITAD_LABEL_CAPTURE.ocrVariantMaxPx;
+      if (Math.max(w, h) > cap) {
+        const scale = cap / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+        const down = document.createElement('canvas');
+        down.width = w;
+        down.height = h;
+        down.getContext('2d', { alpha: false }).drawImage(bitmap, 0, 0, w, h);
+        bitmap.close();
+        bitmap = await createImageBitmap(await ClientImageCompressorAdapter.canvasToJpegBlob(down, 0.85));
+      }
       const sample = document.createElement('canvas');
       sample.width = Math.min(w, 320);
       sample.height = Math.min(h, 240);
@@ -2001,14 +2104,78 @@ class ClientImageCompressorAdapter {
         : [render(false, 1.25), render(true, 1.35)];
       const variants = allVariants.slice(0, maxV);
       const blobs = [];
+      const vq = options.quality ?? ITAD_LABEL_CAPTURE.ocrQuality;
       for (const c of variants) {
-        blobs.push(await ClientImageCompressorAdapter.canvasToJpegBlob(c, 0.88));
+        blobs.push(await ClientImageCompressorAdapter.canvasToJpegBlob(c, vq));
       }
       return blobs;
     } finally {
       try { bitmap?.close?.(); } catch (_) { /* ignore */ }
     }
   }
+
+  /** Variantes OCR — worker + ImageBitmap transferible; fallback sync */
+  static async buildOcrVariantBlobs(sourceBlob, options = {}) {
+    const worker = getItadOcrVariantsWorker();
+    if (worker) {
+      try {
+        const bitmap = await createImageBitmap(sourceBlob);
+        const blobs = await runOcrVariantsOnWorker(worker, bitmap, options);
+        if (blobs.length) return blobs;
+      } catch (_) { /* fallback */ }
+    }
+    return ClientImageCompressorAdapter.buildOcrVariantBlobsSync(sourceBlob, options);
+  }
+}
+
+let itadOcrVariantsWorker = null;
+let itadOcrVariantsWorkerReq = 0;
+
+function getItadOcrVariantsWorker() {
+  if (itadOcrVariantsWorker) return itadOcrVariantsWorker;
+  if (typeof Worker === 'undefined') return null;
+  try {
+    const base = document.querySelector('base')?.href || window.location.href;
+    itadOcrVariantsWorker = new Worker(new URL('itad-ocr-variants.worker.js', base));
+    return itadOcrVariantsWorker;
+  } catch {
+    try {
+      itadOcrVariantsWorker = new Worker('itad-ocr-variants.worker.js');
+      return itadOcrVariantsWorker;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function runOcrVariantsOnWorker(worker, bitmap, options = {}) {
+  const id = ++itadOcrVariantsWorkerReq;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      worker.removeEventListener('message', onMsg);
+      try { bitmap.close(); } catch (_) { /* ignore */ }
+      reject(new Error('OCR variants worker timeout'));
+    }, 28000);
+    const onMsg = (ev) => {
+      if (!ev.data || ev.data.id !== id) return;
+      worker.removeEventListener('message', onMsg);
+      clearTimeout(timer);
+      if (!ev.data.ok) {
+        reject(new Error(ev.data.error || 'OCR variants worker error'));
+        return;
+      }
+      const blobs = (ev.data.buffers || []).map(buf => new Blob([buf], { type: 'image/jpeg' }));
+      resolve(blobs);
+    };
+    worker.addEventListener('message', onMsg);
+    worker.postMessage({
+      id,
+      maxPx: options.maxPx ?? ITAD_LABEL_CAPTURE.ocrVariantMaxPx,
+      maxVariants: options.maxVariants ?? ITAD_LABEL_CAPTURE.ocrMaxVariants,
+      quality: options.quality ?? ITAD_LABEL_CAPTURE.ocrQuality,
+      bitmap
+    }, [bitmap]);
+  });
 }
 
 /** Worker OCR reutilizable (más rápido que crear Tesseract en cada foto) */
@@ -2028,6 +2195,74 @@ function getItadLabelOcrWorker() {
   }
   return itadLabelOcrWorkerPromise;
 }
+
+/** Evita data: URLs gigantes al decodificar con ZXing */
+async function zxingDecodeFromCanvas(reader, canvas, jpegQuality = 0.82) {
+  const blob = await new Promise(resolve => {
+    canvas.toBlob(b => resolve(b), 'image/jpeg', jpegQuality);
+  });
+  if (!blob) return null;
+  const url = URL.createObjectURL(blob);
+  try {
+    const res = await reader.decodeFromImageUrl(url);
+    return res?.getText?.() || null;
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Subida estética sin bloquear recepción */
+const PhotoUploadOutbox = {
+  queue: [],
+  inflight: 0,
+  MAX: 2,
+
+  enqueue(job) {
+    this.queue.push(job);
+    this.drain();
+  },
+
+  drain() {
+    while (this.inflight < this.MAX && this.queue.length) {
+      const job = this.queue.shift();
+      this.inflight += 1;
+      this.runJob(job).finally(() => {
+        this.inflight -= 1;
+        this.drain();
+      });
+    }
+  },
+
+  async runJob(job) {
+    try {
+      const prev = job.item.photoRef?.publicUrl;
+      if (prev && String(prev).startsWith('blob:')) {
+        try { URL.revokeObjectURL(prev); } catch (_) { /* ignore */ }
+      }
+      const uploadRes = await AppState.storage.uploadPhoto(job.blob, job.filename);
+      job.item.attachPhoto({
+        storagePath: uploadRes.storagePath,
+        publicUrl: uploadRes.publicUrl,
+        sizeBytes: job.sizeBytes,
+        isLocalFallback: !!uploadRes.isLocalFallback,
+        _uploadState: 'synced'
+      });
+      syncActiveOrderItemsSnapshot();
+      persistActiveOrderDebounced(400);
+      UI.patchReceptionRow(job.item);
+      const where = uploadRes.isLocalFallback
+        ? 'solo local'
+        : `nube · ${(job.sizeBytes / 1024).toFixed(0)} KB`;
+      UIFeedback.toast(`Foto estética subida (${where})`, 'success');
+    } catch (err) {
+      job.item.photoRef = job.item.photoRef || {};
+      job.item.photoRef._uploadState = 'failed';
+      UIFeedback.toast('Error al subir foto: ' + (err.message || err), 'danger');
+    }
+  }
+};
 
 const ITAD_SB_PROJECT_REF = 'fmqtkuyefbawfpeijjnq';
 const ITAD_SB_DEFAULT_URL = `https://${ITAD_SB_PROJECT_REF}.supabase.co`;
@@ -2065,6 +2300,12 @@ function saveLabSession(patch) {
   const s = { ...getLabSession(), ...patch };
   localStorage.setItem(ITAD_SESSION_KEY, JSON.stringify(s));
   return s;
+}
+
+function getOperatorNameSync() {
+  const fromInput = (document.getElementById('inputOperatorName')?.value || '').trim();
+  if (fromInput.length >= 2) return fromInput;
+  return (getLabSession().operatorName || '').trim();
 }
 
 async function ensureOperatorName() {
@@ -2548,68 +2789,58 @@ class ItadSupabaseHub {
     return { ok: true, data };
   }
 
-  /** Reserva serie en nube antes de marcar recibida (evita duplicados entre teléfonos) */
+  /** Reserva serie en nube (RPC atómico FOR UPDATE + jsonb_set) */
   async claimSerialReceived({ labOrderId, serialNormalized, sessionId, operatorName, via, skipNormalizedAsset = false }) {
     if (!this.client || !labOrderId) return { ok: false, error: 'Sin Supabase' };
     const norm = this.normalizeSerialForCloud(serialNormalized);
-    const receivedAt = new Date().toISOString();
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const { data, error } = await this.client
-        .from(ITAD_LAB_ORDERS_TABLE)
-        .select('items, updated_at')
-        .eq('lab_order_id', labOrderId)
-        .maybeSingle();
-      if (error) return { ok: false, error: error.message };
-      if (!data) return { ok: false, error: 'Orden no encontrada en la nube' };
+    const { data, error } = await this.client.rpc('itad_claim_serial_received', {
+      p_lab_order_id: labOrderId,
+      p_serial: norm,
+      p_operator: operatorName || '',
+      p_session: sessionId || '',
+      p_via: via || 'pistol_scan'
+    });
 
-      const items = Array.isArray(data.items) ? data.items.map(j => ({ ...j })) : [];
-      const idx = items.findIndex(j => this.normalizeSerialForCloud(j.serial) === norm);
-      if (idx < 0) return { ok: false, error: 'Serie no está en la orden autorizada' };
+    if (error) {
+      const missingRpc = /itad_claim_serial_received|42883|PGRST202/i.test(error.message || '');
+      if (missingRpc) {
+        return {
+          ok: false,
+          error: 'Ejecute supabase/007_itad_claim_serial_rpc.sql en el proyecto Supabase'
+        };
+      }
+      return { ok: false, error: error.message };
+    }
 
-      const row = items[idx];
-      if (row.status === 'RECEIVED') {
+    const result = data && typeof data === 'object' ? data : {};
+    if (!result.ok) {
+      if (result.reason === 'ALREADY_RECEIVED') {
         return {
           ok: false,
           reason: 'ALREADY_RECEIVED',
-          by: row.receivedByName || 'otro operador',
-          at: row.scannedAt || null
+          by: result.by || 'otro operador',
+          at: result.at || null
         };
       }
-
-      items[idx] = {
-        ...row,
-        status: 'RECEIVED',
-        scannedAt: receivedAt,
-        scanMethod: via,
-        receivedByName: operatorName,
-        receivedBySession: sessionId
-      };
-
-      const { error: upErr } = await this.client
-        .from(ITAD_LAB_ORDERS_TABLE)
-        .update({ items, updated_at: receivedAt })
-        .eq('lab_order_id', labOrderId)
-        .eq('updated_at', data.updated_at);
-
-      if (!upErr) {
-        const localOrder = typeof OrderStore !== 'undefined'
-          ? OrderStore.orders.find(o => o.id === labOrderId)
-          : null;
-        const orderForSync = localOrder
-          ? { ...localOrder, items }
-          : { id: labOrderId, orderMetadata: {}, items, status: 'OPEN', workflow: {} };
-        if (!skipNormalizedAsset) {
-          const norm = await this.syncSingleReceivedAsset(orderForSync, items[idx]);
-          if (!norm.ok) {
-            return { ok: true, item: items[idx], warn: norm.error || 'Tabla assets no actualizada' };
-          }
-        }
-        return { ok: true, item: items[idx] };
-      }
-      if (attempt === 2) return { ok: false, error: upErr.message || 'Conflicto concurrente' };
+      return { ok: false, error: result.error || 'No se pudo reservar la serie' };
     }
-    return { ok: false, error: 'No se pudo reservar la serie' };
+
+    const claimedItem = result.item || {};
+    const localOrder = typeof OrderStore !== 'undefined'
+      ? OrderStore.orders.find(o => o.id === labOrderId)
+      : null;
+    const orderForSync = localOrder
+      ? { ...localOrder }
+      : { id: labOrderId, orderMetadata: {}, items: [], status: 'OPEN', workflow: {} };
+
+    if (!skipNormalizedAsset) {
+      const normRes = await this.syncSingleReceivedAsset(orderForSync, claimedItem);
+      if (!normRes.ok) {
+        return { ok: true, item: claimedItem, warn: normRes.error || 'Tabla assets no actualizada' };
+      }
+    }
+    return { ok: true, item: claimedItem };
   }
 
   async heartbeatPresence(labOrderId) {
@@ -2674,7 +2905,7 @@ class SupabaseStorageAdapter {
     const path = `cosmetic/${new Date().getFullYear()}/${filename}`;
     const { data, error } = await this.client.storage
       .from(this.bucketPhotos)
-      .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+      .upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: true });
 
     if (error) throw error;
 
@@ -2837,6 +3068,7 @@ const AppState = {
     serviceOrderId: ''
   },
   items: [],
+  serialIndex: new Map(),
   storage: new SupabaseStorageAdapter(),
   blanccoRecords: new Map(),
   signerClient: { name: '', dpi: '', signature: null },
@@ -2916,6 +3148,39 @@ function serializeAssetItem(item) {
   };
 }
 
+function rebuildSerialIndex() {
+  AppState.serialIndex = new Map();
+  for (const item of AppState.items || []) {
+    const norm = item.serial?.normalized;
+    if (!norm) continue;
+    AppState.serialIndex.set(norm, item);
+    const core = Domain.SerialMatcher.pfCore(norm);
+    if (core.length >= 5) AppState.serialIndex.set(`pf:${core}`, item);
+  }
+}
+
+/** Match O(1) para pistola — solo lecturas exactas / PF core indexados */
+function matchPistolFromIndex(texts) {
+  const merged = [];
+  for (const chunk of texts || []) {
+    merged.push(...Domain.SerialMatcher.extractAllScanTokens(String(chunk || '')));
+  }
+  const seen = new Set();
+  for (const raw of merged) {
+    const norm = Domain.SerialMatcher.fixLenovoPfTypo(Domain.SerialMatcher.normalize(raw));
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    if (norm.length < 5 && !Domain.SerialMatcher.isDellServiceTagNorm(norm)) continue;
+    let hit = AppState.serialIndex.get(norm);
+    if (!hit) {
+      const core = Domain.SerialMatcher.pfCore(norm);
+      if (core.length >= 5) hit = AppState.serialIndex.get(`pf:${core}`);
+    }
+    if (hit) return { matchType: 'EXACT', item: hit, confidence: 1.0 };
+  }
+  return null;
+}
+
 function deserializeAssetItem(j) {
   const item = new Domain.AssetItem({
     itemNo: j.itemNo,
@@ -2947,6 +3212,31 @@ const OrderStore = {
   activeOrderId: null,
   STORAGE_KEY: 'itad_open_orders_v1',
 
+  persistActiveDebounceTimer: null,
+
+  persistActiveDebounced(delayMs = 300) {
+    clearTimeout(this.persistActiveDebounceTimer);
+    const run = () => {
+      this.persistActiveDebounceTimer = null;
+      this.persistActive();
+    };
+    if (typeof requestIdleCallback === 'function') {
+      clearTimeout(this.persistActiveDebounceTimer);
+      this.persistActiveDebounceTimer = setTimeout(() => {
+        requestIdleCallback(() => run(), { timeout: delayMs + 200 });
+      }, delayMs);
+    } else {
+      this.persistActiveDebounceTimer = setTimeout(run, delayMs);
+    }
+  },
+
+  flushPersistActiveDebounced() {
+    if (!this.persistActiveDebounceTimer) return;
+    clearTimeout(this.persistActiveDebounceTimer);
+    this.persistActiveDebounceTimer = null;
+    this.persistActive();
+  },
+
   persistActive() {
     if (!this.activeOrderId) return;
     const idx = this.orders.findIndex(o => o.id === this.activeOrderId);
@@ -2976,6 +3266,7 @@ const OrderStore = {
         countryCode: 'GT', serviceOrderId: ''
       };
       AppState.items = [];
+      AppState.serialIndex = new Map();
       AppState.blanccoRecords = new Map();
       AppState.rejectionAttempts = [];
       resetWorkflowState();
@@ -2983,6 +3274,7 @@ const OrderStore = {
     }
     AppState.orderMetadata = { ...order.orderMetadata };
     AppState.items = (order.items || []).map(deserializeAssetItem);
+    rebuildSerialIndex();
     AppState.blanccoRecords = new Map();
     (order.blanccoRecords || []).forEach(([k, v]) => AppState.blanccoRecords.set(k, v));
     AppState.rejectionAttempts = order.rejectionAttempts || [];
@@ -3376,6 +3668,127 @@ function persistActiveOrder() {
   OrderStore.persistActive();
 }
 
+function persistActiveOrderDebounced(ms) {
+  OrderStore.persistActiveDebounced(ms);
+}
+
+/** Espejo inmediato en OrderStore.orders (sin localStorage) — safe durante ráfaga + pull */
+function syncActiveOrderItemsSnapshot() {
+  if (!OrderStore.activeOrderId) return;
+  const idx = OrderStore.orders.findIndex(o => o.id === OrderStore.activeOrderId);
+  if (idx < 0) return;
+  OrderStore.orders[idx] = {
+    ...OrderStore.orders[idx],
+    updatedAt: new Date().toISOString(),
+    orderMetadata: { ...AppState.orderMetadata },
+    items: AppState.items.map(serializeAssetItem),
+    workflow: { ...AppState.workflow },
+    rejectionAttempts: [...AppState.rejectionAttempts],
+    status: AppState.workflow.orderClosed ? 'CLOSED' : 'OPEN'
+  };
+}
+
+/** Cola fire-and-forget: claim RPC + assets sin bloquear pistola */
+const ScanOutbox = {
+  queue: [],
+  inflight: 0,
+  MAX_CONCURRENT: 2,
+  MAX_ATTEMPTS: 4,
+
+  isBusy() {
+    return this.queue.length > 0 || this.inflight > 0;
+  },
+
+  enqueue(job) {
+    this.queue.push({ ...job, attempts: 0 });
+    this.drain();
+  },
+
+  drain() {
+    while (this.inflight < this.MAX_CONCURRENT && this.queue.length) {
+      const job = this.queue.shift();
+      this.inflight += 1;
+      this.runJob(job).finally(() => {
+        this.inflight -= 1;
+        this.drain();
+      });
+    }
+  },
+
+  async runJob(job) {
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected() || !job.orderId) return;
+
+    try {
+      let order = job.order || OrderStore.orders.find(o => o.id === job.orderId);
+      if (order && !order.cloudSynced) {
+        const ensure = await flushOrderToCloudById(job.orderId, { syncAssets: false });
+        if (!ensure.ok) throw new Error(ensure.error || 'No se pudo subir la orden');
+        order = OrderStore.orders.find(o => o.id === job.orderId);
+      }
+
+      const claimArgs = {
+        labOrderId: job.orderId,
+        serialNormalized: job.serialNormalized,
+        sessionId: job.sessionId,
+        operatorName: job.operatorName,
+        via: job.via,
+        skipNormalizedAsset: true
+      };
+      let claim = await hub.claimSerialReceived(claimArgs);
+      if (!claim.ok && claim.error === 'Orden no encontrada en la nube') {
+        await flushOrderToCloudById(job.orderId, { syncAssets: false });
+        claim = await hub.claimSerialReceived(claimArgs);
+      }
+
+      if (!claim.ok) {
+        if (claim.reason === 'ALREADY_RECEIVED') {
+          if (!ScanOutbox.isBusy()) {
+            await OrderStore.pullFromCloud({ silent: true });
+          }
+          UI.revertPendingReceive(job.item);
+          UI.displayScanResult(
+            'warning',
+            `⚠️ Duplicado en nube: ${job.item.serial.raw} (${claim.by || 'otro operador'})`
+          );
+          UIFeedback.toast(`Ya recibida por ${claim.by || 'otro teléfono'}`, 'warning');
+          return;
+        }
+        throw new Error(claim.error || 'claim failed');
+      }
+
+      if (claim.warn) UIFeedback.toast(`Recibido; aviso: ${claim.warn}`, 'warning');
+
+      const orderSnap = OrderStore.orders.find(o => o.id === job.orderId);
+      if (orderSnap && job.item) {
+        void hub.syncSingleReceivedAsset(orderSnap, serializeAssetItem(job.item));
+      }
+
+      job.item._syncState = 'synced';
+      if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
+        UI.setCloudSyncHint('recibido ↑ nube');
+      }
+      const idx = OrderStore.orders.findIndex(o => o.id === job.orderId);
+      if (idx >= 0) {
+        OrderStore.orders[idx].updatedAt = new Date().toISOString();
+        OrderStore.persistActiveDebounced(300);
+      }
+    } catch (err) {
+      job.attempts += 1;
+      if (job.attempts < ScanOutbox.MAX_ATTEMPTS) {
+        const delay = 350 * job.attempts;
+        setTimeout(() => {
+          ScanOutbox.queue.push(job);
+          ScanOutbox.drain();
+        }, delay);
+        return;
+      }
+      UI.revertPendingReceive(job.item);
+      UIFeedback.toast(err.message || 'Sync falló tras reintentos', 'danger');
+    }
+  }
+};
+
 let itadCloudPollTimer = null;
 let itadFullAssetSyncTimer = null;
 
@@ -3446,11 +3859,18 @@ async function flushPendingLocalOrdersToCloud() {
 
 function startCloudMultiUserSync() {
   if (itadCloudPollTimer) return;
-  const tick = () => OrderStore.pullFromCloud({ silent: true });
+  const tick = () => {
+    if (ScanOutbox.isBusy()) return;
+    OrderStore.pullFromCloud({ silent: true });
+  };
   tick();
   itadCloudPollTimer = setInterval(tick, 25000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') OrderStore.pullFromCloud({ silent: true });
+    if (document.visibilityState === 'hidden') {
+      OrderStore.flushPersistActiveDebounced();
+    } else if (!ScanOutbox.isBusy()) {
+      OrderStore.pullFromCloud({ silent: true });
+    }
   });
 
   const presenceTick = () => {
@@ -4103,7 +4523,7 @@ const UI = {
   liveScanReader: null,
   liveScanHandled: false,
   liveScanFrameTimer: null,
-  pistolSubmitLock: false,
+  pistolLastDedupe: { serial: '', at: 0 },
   pistolAutoTimer: null,
   labelOcrBusy: false,
   pendingReceiveConfirm: null,
@@ -4496,7 +4916,7 @@ const UI = {
       statusEl.textContent = 'Leyendo imagen (OCR)… ~20–45 s en teléfono';
       UIFeedback.toast('Procesando foto del correo…', 'info');
       try {
-        const compressed = await ClientImageCompressorAdapter.compressImage(file, 1600, 0.85);
+        const compressed = await ClientImageCompressorAdapter.compressImage(file, 1280, 0.72);
         const { data } = await Tesseract.recognize(compressed.blob, 'spa+eng', {
           logger: m => {
             if (m.status === 'recognizing text') {
@@ -4957,7 +5377,7 @@ const UI = {
         return;
       }
       UI.labelOcrBusy = true;
-      UI.showScanProcessing('⏳ Analizando foto… ~20–45 s en teléfono. No dispare otra aún.');
+      UI.showScanProcessing('⏳ Leyendo etiqueta… ~8–20 s.');
       try {
         const { texts, source } = await UI.decodeLabelPhotoWithFallback(file, null);
         if (!texts.length) {
@@ -4972,25 +5392,22 @@ const UI = {
       }
     };
 
-    const handlePistol = async () => {
-      if (UI.pistolSubmitLock) return;
+    const handlePistol = () => {
       const input = document.getElementById('inputManualSerial');
       const raw = input.value;
       input.value = '';
+      UI.focusPistolInput();
       const tokens = Domain.SerialMatcher.extractAllScanTokens(raw);
       if (!tokens.length) return;
       if (!AppState.items.length) {
         UIFeedback.toast('Cargue primero la orden de recolección', 'warning');
-        UI.focusPistolInput();
         return;
       }
-      UI.pistolSubmitLock = true;
-      try {
-        await UI.processValidationTexts(tokens, 'pistol_scan');
-      } finally {
-        UI.pistolSubmitLock = false;
-        UI.focusPistolInput();
-      }
+      const probeNorm = Domain.SerialMatcher.fixLenovoPfTypo(
+        Domain.SerialMatcher.normalize(tokens[0] || '')
+      );
+      if (probeNorm && UI.isPistolDuplicate(probeNorm)) return;
+      void UI.processValidationTexts(tokens, 'pistol_scan');
     };
 
     document.getElementById('btnValidateManual').onclick = () => { handlePistol(); };
@@ -5006,12 +5423,22 @@ const UI = {
       clearTimeout(UI.pistolAutoTimer);
       UI.pistolAutoTimer = setTimeout(() => {
         const v = pistolInp.value;
-        if (!v.trim() || UI.pistolSubmitLock) return;
+        if (!v.trim()) return;
         if (Domain.SerialMatcher.pistolScanLooksComplete(v)) {
           handlePistol();
         }
-      }, 320);
+      }, 120);
     });
+  },
+
+  isPistolDuplicate(serialNormalized) {
+    const now = Date.now();
+    const key = serialNormalized || '';
+    if (key && UI.pistolLastDedupe.serial === key && now - UI.pistolLastDedupe.at < 300) {
+      return true;
+    }
+    if (key) UI.pistolLastDedupe = { serial: key, at: now };
+    return false;
   },
 
   focusPistolInput() {
@@ -5021,6 +5448,38 @@ const UI = {
     try {
       el.focus({ preventScroll: true });
     } catch (_) { /* ignore */ }
+  },
+
+  patchReceptionRow(item) {
+    if (!item?.serial?.normalized) return;
+    const tr = document.querySelector(
+      `#tableReception tbody tr[data-serial="${item.serial.normalized}"]`
+    );
+    if (!tr) {
+      UI.renderReceptionTable();
+      return;
+    }
+    const statusEl = tr.querySelector('[data-col-status]');
+    const opEl = tr.querySelector('[data-col-operator]');
+    if (statusEl) {
+      statusEl.innerHTML = item.status === 'RECEIVED'
+        ? '<span class="badge badge-success">Recibido</span>'
+        : '<span class="badge badge-muted">Pendiente</span>';
+    }
+    if (opEl) opEl.innerHTML = `<small>${item.receivedByName || '—'}</small>`;
+    tr.classList.toggle('row-received', item.status === 'RECEIVED');
+  },
+
+  bumpReceptionKpis() {
+    const received = AppState.items.filter(i => i.status === 'RECEIVED').length;
+    const total = AppState.items.length;
+    const photos = AppState.items.filter(i => i.photoRef).length;
+    const kRec = document.getElementById('kpiReceived');
+    const kPen = document.getElementById('kpiPending');
+    const kPh = document.getElementById('kpiPhotos');
+    if (kRec) kRec.textContent = String(received);
+    if (kPen) kPen.textContent = String(total - received);
+    if (kPh) kPh.textContent = String(photos);
   },
 
   bindLiveQrScanner() {
@@ -5230,7 +5689,12 @@ const UI = {
   },
 
   async canvasToJpegFile(canvas, name = 'label-capture.jpg') {
-    const blob = await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/jpeg', 0.92));
+    const { blob } = await ClientImageCompressorAdapter.compressCanvas(
+      canvas,
+      ITAD_LABEL_CAPTURE.maxPx,
+      ITAD_LABEL_CAPTURE.quality,
+      { maxBytes: ITAD_LABEL_CAPTURE.maxBytes }
+    );
     return blob ? new File([blob], name, { type: 'image/jpeg' }) : null;
   },
 
@@ -5261,19 +5725,16 @@ const UI = {
     if (UI.liveScanHandled) return;
     const video = document.getElementById('liveScanVideo');
     const cropCanvas = UI.videoFrameToCroppedCanvas(video, 'ocr');
-    const fullCanvas = await UI.videoFrameToFullCanvas(video);
-    if (!cropCanvas && !fullCanvas) {
+    if (!cropCanvas) {
       UIFeedback.toast('Espere a que la cámara enfoque', 'warning');
       return;
     }
     UI.liveScanHandled = true;
     UI.labelOcrBusy = true;
-    UI.setLiveScanStatus('⏳ Analizando foto… no cierre (~20–45 s)');
-    const cropFile = cropCanvas ? await UI.canvasToJpegFile(cropCanvas, 'label-crop.jpg') : null;
-    const fullFile = fullCanvas ? await UI.canvasToJpegFile(fullCanvas, 'label-full.jpg') : null;
-    UI.stopLiveScanner({ keepModalOpen: true });
-    UI.showScanProcessing('⏳ Analizando foto… espere aquí (~20–45 s). No dispare otra foto aún.');
-    if (!cropFile && !fullFile) {
+    UI.setLiveScanStatus('⏳ Leyendo etiqueta…');
+    const cropFile = await UI.canvasToJpegFile(cropCanvas, 'label-crop.jpg');
+    UI.showScanProcessing('⏳ Leyendo etiqueta… suele tardar 8–20 s.');
+    if (!cropFile) {
       UIFeedback.toast('No se pudo capturar la imagen', 'danger');
       UI.labelOcrBusy = false;
       UI.liveScanHandled = false;
@@ -5281,10 +5742,26 @@ const UI = {
       return;
     }
     try {
-      const { texts, source } = await UI.decodeLabelPhotoWithFallback(
-        cropFile || fullFile,
-        cropFile && fullFile ? fullFile : null
+      let { texts, source } = await UI.decodeTextsFromLabelPhoto(cropFile);
+      const cropMatched = texts.length && Domain.SerialMatcher.match(
+        Domain.SerialMatcher.tokensForValidation(texts, 'label_mixed', AppState.items),
+        AppState.items
       );
+      if (!cropMatched) {
+        const fullCanvas = await UI.videoFrameToFullCanvas(video);
+        const fullFile = fullCanvas
+          ? await UI.canvasToJpegFile(fullCanvas, 'label-full.jpg')
+          : null;
+        if (fullFile) {
+          UIFeedback.toast('Reintentando con encuadre completo…', 'info');
+          const full = await UI.decodeTextsFromLabelPhoto(fullFile);
+          if (full.texts.length) {
+            texts = full.texts;
+            source = full.source;
+          }
+        }
+      }
+      UI.stopLiveScanner({ keepModalOpen: true });
       if (!texts.length) {
         UI.displayScanResult('warning', 'No se leyó serie en la foto. Encuadre ST: o Data Matrix Dell, o use pistola USB.');
         return;
@@ -5351,8 +5828,8 @@ const UI = {
           const hints = new Map();
           hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
           const reader = new ZXing.BrowserMultiFormatReader(hints);
-          const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.92));
-          if (res?.getText()) results.add(res.getText());
+          const text = await zxingDecodeFromCanvas(reader, canvas, 0.82);
+          if (text) results.add(text);
         } catch (_) { /* ignore */ }
       }
       if (results.size) break;
@@ -5408,6 +5885,44 @@ const UI = {
     return Domain.SerialMatcher.expandCandidates(filtered.length ? filtered : arr);
   },
 
+  labelExactMatchFromBarcodes(barcodeTexts, tokens) {
+    if (!barcodeTexts?.length || !AppState.items?.length) return null;
+    const idxHit = matchPistolFromIndex(barcodeTexts);
+    if (idxHit) {
+      return {
+        texts: UI.labelTokensToTexts(tokens, barcodeTexts),
+        source: 'label_mixed'
+      };
+    }
+    for (const raw of barcodeTexts) {
+      const parts = Domain.SerialMatcher.extractAllScanTokens(String(raw || ''));
+      for (const tok of parts) {
+        const norm = Domain.SerialMatcher.fixLenovoPfTypo(Domain.SerialMatcher.normalize(tok));
+        if (norm && AppState.serialIndex?.has(norm)) {
+          tokens.add(tok);
+          return {
+            texts: UI.labelTokensToTexts(tokens, barcodeTexts),
+            source: 'label_mixed'
+          };
+        }
+      }
+    }
+    if ('BarcodeDetector' in window) {
+      for (const raw of barcodeTexts) {
+        if (!Domain.SerialMatcher.isLikelyBarcodeRead(raw, AppState.items)) continue;
+        const expanded = Domain.SerialMatcher.expandCandidates([raw]);
+        if (Domain.SerialMatcher.match(expanded, AppState.items)) {
+          expanded.forEach(t => tokens.add(t));
+          return {
+            texts: UI.labelTokensToTexts(tokens, barcodeTexts),
+            source: 'label_mixed'
+          };
+        }
+      }
+    }
+    return null;
+  },
+
   async decodeTextsFromLabelPhoto(file) {
     const tokens = new Set();
     const barcodeTexts = await UI.decodeBarcodesFromImage(file);
@@ -5424,11 +5939,19 @@ const UI = {
     let hit = tryReturn();
     if (hit) return hit;
 
+    const barcodeExact = UI.labelExactMatchFromBarcodes(barcodeTexts, tokens);
+    if (barcodeExact) return barcodeExact;
+
     if (typeof Tesseract === 'undefined') {
       return { texts: UI.labelTokensToTexts(tokens, barcodeTexts), source: barcodeTexts.length ? 'label_mixed' : 'ocr' };
     }
 
-    const compressed = await ClientImageCompressorAdapter.compressImage(file, 1120, 0.85);
+    const compressed = await ClientImageCompressorAdapter.compressImage(
+      file,
+      ITAD_LABEL_CAPTURE.ocrMaxPx,
+      ITAD_LABEL_CAPTURE.ocrQuality,
+      { maxBytes: ITAD_LABEL_CAPTURE.maxBytes }
+    );
     const worker = await getItadLabelOcrWorker();
 
     const ocrRotation = async (rot, passLabel) => {
@@ -5440,7 +5963,10 @@ const UI = {
       hit = tryReturn();
       if (hit) return hit;
 
-      const ocrBlobs = await ClientImageCompressorAdapter.buildOcrVariantBlobs(baseBlob, { maxVariants: 2 });
+      const ocrBlobs = await ClientImageCompressorAdapter.buildOcrVariantBlobs(baseBlob, {
+        maxVariants: ITAD_LABEL_CAPTURE.ocrMaxVariants,
+        maxPx: ITAD_LABEL_CAPTURE.ocrVariantMaxPx
+      });
       for (const ob of ocrBlobs) {
         const data = worker
           ? (await worker.recognize(ob)).data
@@ -5458,14 +5984,14 @@ const UI = {
       return null;
     };
 
-    hit = await ocrRotation(0, '0°');
-    if (hit) return hit;
-    hit = await ocrRotation(180, '180°');
-    if (hit) return hit;
-    hit = await ocrRotation(90, '90°');
-    if (hit) return hit;
-    hit = await ocrRotation(270, '270°');
-    if (hit) return hit;
+    for (const rot of ITAD_LABEL_CAPTURE.ocrRotationsPrimary) {
+      hit = await ocrRotation(rot, `${rot}°`);
+      if (hit) return hit;
+    }
+    for (const rot of ITAD_LABEL_CAPTURE.ocrRotationsFallback) {
+      hit = await ocrRotation(rot, `${rot}°`);
+      if (hit) return hit;
+    }
 
     const texts = UI.labelTokensToTexts(tokens, barcodeTexts);
     const source = barcodeTexts.length ? 'label_mixed' : 'ocr';
@@ -5504,7 +6030,12 @@ const UI = {
       UI.displayScanResult('warning', 'Lectura vacía o ilegible. Dispare de nuevo el código de barras.');
       return;
     }
-    let match = Domain.SerialMatcher.matchWithOrderFuzzy(expanded, AppState.items);
+    let match = via === 'pistol_scan'
+      ? matchPistolFromIndex(expanded.length ? expanded : texts)
+      : null;
+    if (!match) {
+      match = Domain.SerialMatcher.matchWithOrderFuzzy(expanded, AppState.items);
+    }
     if (!match && /^label_photo/.test(via || '')) {
       const harvested = Domain.SerialMatcher.harvestFromOcrAgainstOrder((texts || []).join('\n'), AppState.items);
       if (harvested.length) {
@@ -5584,26 +6115,30 @@ const UI = {
     item.scanMethod = null;
     item.receivedByName = '';
     item.receivedBySession = '';
-    persistActiveOrder();
-    UI.renderReceptionTable();
+    item._syncState = null;
+    syncActiveOrderItemsSnapshot();
+    persistActiveOrderDebounced(300);
+    UI.patchReceptionRow(item);
+    UI.bumpReceptionKpis();
   },
 
   async finalizeReceiveMatch(match, via) {
     UI.pendingReceiveConfirm = null;
-    const operatorName = await ensureOperatorName();
+    const fastScan = /^(pistol_scan|manual_entry)$/.test(via || '');
+
+    let operatorName = getOperatorNameSync();
+    if (operatorName.length < 2) {
+      operatorName = await ensureOperatorName();
+    }
     if (!operatorName) return;
 
     const sess = getLabSession();
     const hub = getItadSupabaseHub();
     const orderId = OrderStore.activeOrderId;
     const order = OrderStore.orders.find(o => o.id === orderId);
-    const fastScan = /^(pistol_scan|manual_entry)$/.test(via || '');
 
     match.item.markReceived(via, { operatorName, sessionId: sess.sessionId });
-    persistActiveOrder();
-    UI.vibrateDevice();
-    UI.renderReceptionTable();
-    UI.focusPistolInput();
+    match.item._syncState = hub.isConnected() && orderId ? 'pending' : 'local';
 
     const showSuccess = (cloudNote) => {
       UI.displayScanResult(
@@ -5613,12 +6148,43 @@ const UI = {
       );
     };
 
+    if (fastScan) {
+      syncActiveOrderItemsSnapshot();
+      persistActiveOrderDebounced(300);
+      UI.vibrateDevice();
+      UI.patchReceptionRow(match.item);
+      UI.bumpReceptionKpis();
+      UI.focusPistolInput();
+
+      if (!hub.isConnected() || !orderId) {
+        showSuccess(' · solo local (sin Supabase)');
+        return;
+      }
+
+      showSuccess(' · sincronizando…');
+      ScanOutbox.enqueue({
+        orderId,
+        order,
+        item: match.item,
+        serialNormalized: match.item.serial.normalized,
+        sessionId: sess.sessionId,
+        operatorName,
+        via
+      });
+      return;
+    }
+
+    persistActiveOrder();
+    UI.vibrateDevice();
+    UI.renderReceptionTable();
+    UI.focusPistolInput();
+
     if (!hub.isConnected() || !orderId) {
       showSuccess(' · solo local (sin Supabase)');
       return;
     }
 
-    showSuccess(fastScan ? ' · sincronizando…' : ' · guardando…');
+    showSuccess(' · guardando…');
 
     const cloudSync = async () => {
       if (order && !order.cloudSynced) {
@@ -5636,7 +6202,7 @@ const UI = {
         sessionId: sess.sessionId,
         operatorName,
         via,
-        skipNormalizedAsset: fastScan
+        skipNormalizedAsset: false
       };
       let claim = await hub.claimSerialReceived(claimArgs);
       if (!claim.ok && claim.error === 'Orden no encontrada en la nube') {
@@ -5645,7 +6211,7 @@ const UI = {
       }
       if (!claim.ok) {
         if (claim.reason === 'ALREADY_RECEIVED') {
-          await OrderStore.pullFromCloud({ silent: true });
+          if (!ScanOutbox.isBusy()) await OrderStore.pullFromCloud({ silent: true });
           UI.revertPendingReceive(match.item);
           UI.displayScanResult('warning', `⚠️ Duplicado en nube: ${match.item.serial.raw} (${claim.by})`);
           UIFeedback.toast(`Ya recibida por ${claim.by || 'otro teléfono'}`, 'warning');
@@ -5658,10 +6224,6 @@ const UI = {
       if (claim.warn) {
         UIFeedback.toast(`Recibido; aviso: ${claim.warn}`, 'warning');
       }
-      if (fastScan && order) {
-        const itemJ = serializeAssetItem(match.item);
-        void hub.syncSingleReceivedAsset(order, itemJ);
-      }
       UI.setCloudSyncHint('recibido ↑ nube');
       showSuccess(' · guardado Supabase');
       const idx = OrderStore.orders.findIndex(o => o.id === orderId);
@@ -5671,11 +6233,7 @@ const UI = {
       }
     };
 
-    if (fastScan) {
-      void cloudSync();
-    } else {
-      await cloudSync();
-    }
+    await cloudSync();
   },
 
   confirmPendingReceive() {
@@ -5733,8 +6291,8 @@ const UI = {
           ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
 
           try {
-            const res = await reader.decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.9));
-            if (res?.getText()) results.add(res.getText().trim());
+            const text = await zxingDecodeFromCanvas(reader, canvas, 0.82);
+            if (text) results.add(text.trim());
           } catch (_) { /* ignore */ }
         }
       }
@@ -5751,8 +6309,6 @@ const UI = {
       if (!file || !UI.activePhotoItem) return;
 
       const item = UI.activePhotoItem;
-      UIFeedback.toast('Comprimiendo imagen y subiendo a S3...', 'info');
-
       try {
         const compressed = await ClientImageCompressorAdapter.compressImage(
           file,
@@ -5761,31 +6317,39 @@ const UI = {
           { maxBytes: ITAD_COSMETIC_PHOTO.maxBytes }
         );
         const filename = `${item.serial.normalized}_cosmetic_${Date.now()}.jpg`;
-
-        // Subida directa al bucket Supabase (Cero base64 en la base de datos)
-        const uploadRes = await AppState.storage.uploadPhoto(compressed.blob, filename);
+        const previewUrl = URL.createObjectURL(compressed.blob);
 
         item.attachPhoto({
-          storagePath: uploadRes.storagePath,
-          publicUrl: uploadRes.publicUrl,
+          storagePath: `pending://${filename}`,
+          publicUrl: previewUrl,
           sizeBytes: compressed.compressedSize,
-          isLocalFallback: !!uploadRes.isLocalFallback
+          isLocalFallback: true,
+          _uploadState: 'pending'
         });
 
-        persistActiveOrder();
-        UI.renderReceptionTable();
+        syncActiveOrderItemsSnapshot();
+        persistActiveOrderDebounced(400);
+        UI.patchReceptionRow(item);
+
         const who = item.receivedByName || '';
         UI.displayScanResult(
           'success',
-          `✅ EN LA LISTA: ${item.serial.raw} (${item.model})${who ? ` · ${who}` : ''} · foto guardada`,
+          `✅ EN LA LISTA: ${item.serial.raw} (${item.model})${who ? ` · ${who}` : ''} · foto en cola de subida`,
           item
         );
-        const where = uploadRes.isLocalFallback
-          ? 'solo en este navegador (conecte Supabase para nube)'
-          : `Supabase · ${uploadRes.storagePath}`;
-        UIFeedback.toast(`Foto guardada (${(compressed.compressedSize / 1024).toFixed(0)} KB) — ${where}`, 'success');
+        UIFeedback.toast(
+          `Foto comprimida (${(compressed.compressedSize / 1024).toFixed(0)} KB) — subiendo en segundo plano…`,
+          'info'
+        );
+
+        PhotoUploadOutbox.enqueue({
+          item,
+          blob: compressed.blob,
+          filename,
+          sizeBytes: compressed.compressedSize
+        });
       } catch (err) {
-        UIFeedback.toast('Error al almacenar foto: ' + err.message, 'danger');
+        UIFeedback.toast('Error al preparar foto: ' + err.message, 'danger');
       }
     };
   },
@@ -6426,6 +6990,8 @@ const UI = {
     tbody.innerHTML = '';
     UI.filteredReceptionItems().forEach(item => {
       const tr = document.createElement('tr');
+      tr.dataset.serial = item.serial.normalized;
+      if (item.status === 'RECEIVED') tr.classList.add('row-received');
       const statusBadge = item.status === 'RECEIVED'
         ? '<span class="badge badge-success">Recibido</span>'
         : '<span class="badge badge-muted">Pendiente</span>';
@@ -6436,8 +7002,8 @@ const UI = {
         <td>${item.itemNo}</td>
         <td class="code-mono">${item.serial.raw}</td>
         <td>${item.make}<br><small style="color:var(--text-muted)">${item.model}</small></td>
-        <td>${statusBadge}</td>
-        <td><small>${item.receivedByName || '—'}</small></td>
+        <td data-col-status>${statusBadge}</td>
+        <td data-col-operator><small>${item.receivedByName || '—'}</small></td>
         <td>${photoCell}</td>
         <td>${item.cosmeticNote || '—'}</td>
         <td><button type="button" class="btn btn-secondary btn-small" data-serial="${item.serial.normalized}">📷 Foto</button></td>
@@ -6456,7 +7022,6 @@ const UI = {
       sel.appendChild(opt);
     });
     if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-    persistActiveOrder();
     UI.updateOpenOrdersBadge();
   },
 
