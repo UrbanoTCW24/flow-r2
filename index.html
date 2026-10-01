@@ -2098,7 +2098,13 @@ class ItadSupabaseHub {
     this.client = null;
     this.lastProbe = null;
     this.cloudTombstoneIds = new Set();
+    this.testRunIdCache = new Map();
     this.initClient();
+  }
+
+  clearTestRunCache(labOrderId) {
+    if (labOrderId) this.testRunIdCache.delete(labOrderId);
+    else this.testRunIdCache.clear();
   }
 
   reloadFromStorage() {
@@ -2245,15 +2251,16 @@ class ItadSupabaseHub {
     if (runErr) return { ok: false, error: runErr.message };
 
     const testRunId = runData.id;
+    this.testRunIdCache.set(order.id, testRunId);
     const items = order.items || [];
-    let assets = 0;
+    const deviceRows = [];
+    const assetRows = [];
     for (const j of items) {
       const serialRaw = j.serial || '';
       const serialNorm = this.normalizeSerialForCloud(serialRaw);
       if (serialNorm.length < 4) continue;
       const photo = j.photoRef || {};
-
-      const { error: devErr } = await this.client.from(ITAD_DEVICES_TABLE).upsert({
+      deviceRows.push({
         serial_normalized: serialNorm,
         serial_raw: serialRaw,
         vendor: j.make || null,
@@ -2262,10 +2269,8 @@ class ItadSupabaseHub {
         last_seen_at: now,
         last_tc_id: meta.serviceOrderId || null,
         last_lab_order_id: order.id
-      }, { onConflict: 'serial_normalized' });
-      if (devErr) return { ok: false, error: devErr.message };
-
-      const { error: assetErr } = await this.client.from(ITAD_TEST_RUN_ASSETS_TABLE).upsert({
+      });
+      assetRows.push({
         test_run_id: testRunId,
         serial_normalized: serialNorm,
         item_no: j.itemNo ?? null,
@@ -2287,11 +2292,104 @@ class ItadSupabaseHub {
         report_pdf_path: (j.reportPdfRef && j.reportPdfRef.storagePath) || null,
         payload: j,
         updated_at: now
-      }, { onConflict: 'test_run_id,serial_normalized' });
-      if (assetErr) return { ok: false, error: assetErr.message };
-      assets += 1;
+      });
     }
-    return { ok: true, assets, testRunId };
+    const upsertChunks = async (table, rows, onConflict) => {
+      const size = 45;
+      for (let i = 0; i < rows.length; i += size) {
+        const chunk = rows.slice(i, i + size);
+        const { error } = await this.client.from(table).upsert(chunk, { onConflict });
+        if (error) return error;
+      }
+      return null;
+    };
+    const devErr = await upsertChunks(ITAD_DEVICES_TABLE, deviceRows, 'serial_normalized');
+    if (devErr) return { ok: false, error: devErr.message };
+    const assetErr = await upsertChunks(
+      ITAD_TEST_RUN_ASSETS_TABLE,
+      assetRows,
+      'test_run_id,serial_normalized'
+    );
+    if (assetErr) return { ok: false, error: assetErr.message };
+    return { ok: true, assets: assetRows.length, testRunId };
+  }
+
+  async ensureTestRunForOrder(order) {
+    if (!this.client || !order?.id) return { ok: false, error: 'Sin orden' };
+    const cached = this.testRunIdCache.get(order.id);
+    if (cached) return { ok: true, testRunId: cached };
+    const meta = order.orderMetadata || {};
+    const now = new Date().toISOString();
+    const runRow = {
+      lab_order_id: order.id,
+      tc_id: meta.serviceOrderId || null,
+      kind: 'reception',
+      status: order.status || 'OPEN',
+      label: order.label || null,
+      order_metadata: meta,
+      workflow: order.workflow || {},
+      country_code: meta.countryCode || 'GT',
+      updated_at: now
+    };
+    const { data, error } = await this.client
+      .from(ITAD_TEST_RUNS_TABLE)
+      .upsert(runRow, { onConflict: 'lab_order_id' })
+      .select('id')
+      .single();
+    if (error) return { ok: false, error: error.message };
+    this.testRunIdCache.set(order.id, data.id);
+    return { ok: true, testRunId: data.id };
+  }
+
+  /** Una serie recibida — 3 queries, no recorrer los 90 equipos */
+  async syncSingleReceivedAsset(order, itemJ) {
+    if (!this.client || !order?.id || !itemJ) return { ok: false, error: 'Sin datos' };
+    const run = await this.ensureTestRunForOrder(order);
+    if (!run.ok) return run;
+    const meta = order.orderMetadata || {};
+    const now = new Date().toISOString();
+    const serialRaw = itemJ.serial || '';
+    const serialNorm = this.normalizeSerialForCloud(serialRaw);
+    if (serialNorm.length < 4) return { ok: false, error: 'Serie inválida' };
+    const photo = itemJ.photoRef || {};
+
+    const { error: devErr } = await this.client.from(ITAD_DEVICES_TABLE).upsert({
+      serial_normalized: serialNorm,
+      serial_raw: serialRaw,
+      vendor: itemJ.make || null,
+      model: itemJ.model || null,
+      category: itemJ.category || null,
+      last_seen_at: now,
+      last_tc_id: meta.serviceOrderId || null,
+      last_lab_order_id: order.id
+    }, { onConflict: 'serial_normalized' });
+    if (devErr) return { ok: false, error: devErr.message };
+
+    const { error: assetErr } = await this.client.from(ITAD_TEST_RUN_ASSETS_TABLE).upsert({
+      test_run_id: run.testRunId,
+      serial_normalized: serialNorm,
+      item_no: itemJ.itemNo ?? null,
+      vendor: itemJ.make || null,
+      model: itemJ.model || null,
+      category: itemJ.category || null,
+      asset_status: itemJ.status || 'RECEIVED',
+      received_at: itemJ.scannedAt || now,
+      scan_method: itemJ.scanMethod || null,
+      cosmetic_note: itemJ.cosmeticNote || null,
+      photo_storage_path: photo.storagePath || null,
+      photo_public_url: photo.publicUrl || null,
+      photo_size_bytes: photo.sizeBytes ?? null,
+      disks: itemJ.disks || [],
+      cpu: itemJ.cpu || null,
+      ram: itemJ.ram || null,
+      battery_status: itemJ.batteryStatus || null,
+      final_status: itemJ.finalStatus || null,
+      report_pdf_path: (itemJ.reportPdfRef && itemJ.reportPdfRef.storagePath) || null,
+      payload: itemJ,
+      updated_at: now
+    }, { onConflict: 'test_run_id,serial_normalized' });
+    if (assetErr) return { ok: false, error: assetErr.message };
+    return { ok: true };
   }
 
   labOrderRowFromStore(order) {
@@ -2315,7 +2413,7 @@ class ItadSupabaseHub {
     };
   }
 
-  async upsertLabOrder(order) {
+  async upsertLabOrder(order, { syncAssets = true } = {}) {
     if (!this.client || !order?.id) return { ok: false, error: 'Sin Supabase u orden' };
     if (!this.cloudTombstoneIds.size) await this.refreshCloudTombstones();
     if (this.isTombstoned(order.id)) {
@@ -2326,12 +2424,13 @@ class ItadSupabaseHub {
       .from(ITAD_LAB_ORDERS_TABLE)
       .upsert(row, { onConflict: 'lab_order_id' });
     if (error) return { ok: false, error: error.message };
+    if (!syncAssets) return { ok: true, assets: 0 };
     const norm = await this.syncNormalizedLabOrder(order);
     if (!norm.ok) return { ok: false, error: norm.error };
     return { ok: true, assets: norm.assets };
   }
 
-  async syncAllLabOrders(orders) {
+  async syncAllLabOrders(orders, { syncAssets = false } = {}) {
     if (!this.client) return { ok: false, error: 'Sin Supabase', synced: 0, assets: 0, purged: [] };
     await this.refreshCloudTombstones();
     let synced = 0;
@@ -2343,7 +2442,7 @@ class ItadSupabaseHub {
         purged.push(order.id);
         continue;
       }
-      const res = await this.upsertLabOrder(order);
+      const res = await this.upsertLabOrder(order, { syncAssets });
       if (res.ok) {
         synced += 1;
         assets += res.assets || 0;
@@ -2407,6 +2506,7 @@ class ItadSupabaseHub {
     await this.client.from(ITAD_PRESENCE_TABLE).delete().eq('lab_order_id', labOrderId);
     await this.client.from(ITAD_TEST_RUNS_TABLE).delete().eq('lab_order_id', labOrderId);
     const { error } = await this.client.from(ITAD_LAB_ORDERS_TABLE).delete().eq('lab_order_id', labOrderId);
+    this.clearTestRunCache(labOrderId);
     return { ok: !error, error: error?.message };
   }
 
@@ -2449,7 +2549,7 @@ class ItadSupabaseHub {
   }
 
   /** Reserva serie en nube antes de marcar recibida (evita duplicados entre teléfonos) */
-  async claimSerialReceived({ labOrderId, serialNormalized, sessionId, operatorName, via }) {
+  async claimSerialReceived({ labOrderId, serialNormalized, sessionId, operatorName, via, skipNormalizedAsset = false }) {
     if (!this.client || !labOrderId) return { ok: false, error: 'Sin Supabase' };
     const norm = this.normalizeSerialForCloud(serialNormalized);
     const receivedAt = new Date().toISOString();
@@ -2499,9 +2599,11 @@ class ItadSupabaseHub {
         const orderForSync = localOrder
           ? { ...localOrder, items }
           : { id: labOrderId, orderMetadata: {}, items, status: 'OPEN', workflow: {} };
-        const norm = await this.syncNormalizedLabOrder(orderForSync);
-        if (!norm.ok) {
-          return { ok: true, item: items[idx], warn: norm.error || 'Tabla assets no actualizada' };
+        if (!skipNormalizedAsset) {
+          const norm = await this.syncSingleReceivedAsset(orderForSync, items[idx]);
+          if (!norm.ok) {
+            return { ok: true, item: items[idx], warn: norm.error || 'Tabla assets no actualizada' };
+          }
         }
         return { ok: true, item: items[idx] };
       }
@@ -2864,7 +2966,7 @@ const OrderStore = {
       rejectionAttempts: [...AppState.rejectionAttempts],
       status: AppState.workflow.orderClosed ? 'CLOSED' : 'OPEN'
     };
-    this.saveAll();
+    this.saveAll({ skipCloud: true });
   },
 
   applyToAppState(order) {
@@ -3065,7 +3167,7 @@ const OrderStore = {
     this.orders.unshift(order);
     this.activeOrderId = id;
     this.applyToAppState(order);
-    this.saveAll();
+    this.saveAll({ skipCloud: true });
     return order;
   },
 
@@ -3094,8 +3196,10 @@ const OrderStore = {
     };
     order.rejectionAttempts = [];
     order.updatedAt = new Date().toISOString();
+    order.cloudSynced = false;
     this.applyToAppState(order);
-    this.saveAll();
+    this.saveAll({ skipCloud: true });
+    getItadSupabaseHub().clearTestRunCache(order.id);
     return order;
   },
 
@@ -3113,7 +3217,7 @@ const OrderStore = {
     }
     this.activeOrderId = orderId;
     this.applyToAppState(order);
-    this.saveAll();
+    this.saveAll({ skipCloud: true });
   },
 
   closeOrder(orderId) {
@@ -3273,47 +3377,33 @@ function persistActiveOrder() {
 }
 
 let itadCloudPollTimer = null;
+let itadFullAssetSyncTimer = null;
 
+/** Solo espejo JSON de la orden activa — no re-subir 90 assets en cada escaneo */
 function scheduleSupabaseLabSync() {
   clearTimeout(itadSupabaseSyncTimer);
   itadSupabaseSyncTimer = setTimeout(async () => {
     await flushOrdersToCloud();
-  }, 400);
+  }, 800);
+}
+
+function scheduleFullAssetSyncForActiveOrder() {
+  clearTimeout(itadFullAssetSyncTimer);
+  itadFullAssetSyncTimer = setTimeout(async () => {
+    if (!OrderStore.activeOrderId) return;
+    const hub = getItadSupabaseHub();
+    if (!hub.isConnected()) return;
+    await flushOrderToCloudById(OrderStore.activeOrderId, { syncAssets: true });
+  }, 2500);
 }
 
 async function flushOrdersToCloud() {
   if (typeof UI !== 'undefined' && UI.labelOcrBusy) return;
   const hub = getItadSupabaseHub();
-  if (!hub.isConnected()) return;
-  const res = await hub.syncAllLabOrders(OrderStore.orders);
-  if (res.purged?.length) {
-    const gone = new Set(res.purged);
-    OrderStore.orders = OrderStore.orders.filter(o => !gone.has(o.id));
-    if (OrderStore.activeOrderId && gone.has(OrderStore.activeOrderId)) {
-      OrderStore.activeOrderId = OrderStore.orders.find(x => x.status === 'OPEN')?.id || null;
-      const next = OrderStore.orders.find(o => o.id === OrderStore.activeOrderId);
-      OrderStore.applyToAppState(next || null);
-    }
-    OrderStore.saveAll({ skipCloud: true });
-    if (typeof UI !== 'undefined') {
-      UI.renderReceptionOrderSelector();
-      UI.renderOpenOrdersList();
-      UI.renderReceptionTable();
-      UI.renderWorkflowChrome();
-    }
-  }
-  if (res.ok) {
-    for (const o of OrderStore.orders) {
-      o.cloudSynced = true;
-    }
-    OrderStore.saveAll({ skipCloud: true });
-  }
-  if (typeof UI !== 'undefined' && UI.setCloudSyncHint) {
-    if (res.ok) {
-      UI.setCloudSyncHint(`↑ ${res.synced} ord · ${res.assets || 0} eq`);
-    } else if (!res.error?.includes('fetch')) {
-      UI.setCloudSyncHint('sync pendiente');
-    }
+  if (!hub.isConnected() || !OrderStore.activeOrderId) return;
+  const res = await flushOrderToCloudById(OrderStore.activeOrderId, { syncAssets: false });
+  if (typeof UI !== 'undefined' && UI.setCloudSyncHint && res.ok) {
+    UI.setCloudSyncHint('orden ↑ nube');
   }
 }
 
@@ -3322,7 +3412,7 @@ async function flushActiveOrderToCloud() {
   await flushOrderToCloudById(OrderStore.activeOrderId);
 }
 
-async function flushOrderToCloudById(orderId) {
+async function flushOrderToCloudById(orderId, opts = {}) {
   const hub = getItadSupabaseHub();
   if (!hub.isConnected() || !orderId) return { ok: false, error: 'Sin conexión' };
   const order = OrderStore.orders.find(o => o.id === orderId);
@@ -3332,7 +3422,8 @@ async function flushOrderToCloudById(orderId) {
     OrderStore.saveAll({ skipCloud: true });
     return { ok: false, error: 'ORDER_TOMBSTONED', tombstoned: true };
   }
-  const res = await hub.upsertLabOrder(order);
+  const syncAssets = opts.syncAssets !== false;
+  const res = await hub.upsertLabOrder(order, { syncAssets });
   if (res.ok) {
     order.cloudSynced = true;
     OrderStore.saveAll({ skipCloud: true });
@@ -3349,7 +3440,7 @@ async function flushPendingLocalOrdersToCloud() {
   const pending = OrderStore.orders.filter(o => o.cloudSynced === false && !hub.isTombstoned(o.id));
   if (!pending.length) return;
   for (const order of pending) {
-    await flushOrderToCloudById(order.id);
+    await flushOrderToCloudById(order.id, { syncAssets: false });
   }
 }
 
@@ -4735,6 +4826,14 @@ const UI = {
       UI.renderReceptionOrderSelector();
       UI.updateOpenOrdersBadge();
       UIFeedback.toast(msg + skipNote, 'success');
+      const orderId = OrderStore.activeOrderId;
+      const hub = getItadSupabaseHub();
+      if (orderId && hub.isConnected()) {
+        flushOrderToCloudById(orderId, { syncAssets: false }).then(res => {
+          if (res.ok) UI.setCloudSyncHint(`${newItems.length} series ↑ nube`);
+        });
+        scheduleFullAssetSyncForActiveOrder();
+      }
     };
 
     if (sel === '__new__') {
@@ -5478,6 +5577,17 @@ const UI = {
     UI.focusPistolInput();
   },
 
+  revertPendingReceive(item) {
+    if (!item || item.status !== 'RECEIVED') return;
+    item.status = 'PENDING';
+    item.scannedAt = null;
+    item.scanMethod = null;
+    item.receivedByName = '';
+    item.receivedBySession = '';
+    persistActiveOrder();
+    UI.renderReceptionTable();
+  },
+
   async finalizeReceiveMatch(match, via) {
     UI.pendingReceiveConfirm = null;
     const operatorName = await ensureOperatorName();
@@ -5486,80 +5596,86 @@ const UI = {
     const sess = getLabSession();
     const hub = getItadSupabaseHub();
     const orderId = OrderStore.activeOrderId;
+    const order = OrderStore.orders.find(o => o.id === orderId);
+    const fastScan = /^(pistol_scan|manual_entry)$/.test(via || '');
 
-    if (hub.isConnected() && orderId) {
-      persistActiveOrder();
-      let ensure = await flushOrderToCloudById(orderId);
-      if (!ensure.ok) {
-        ensure = await flushOrderToCloudById(orderId);
-      }
-      if (!ensure.ok) {
-        UIFeedback.toast(`No se pudo crear/actualizar la orden en Supabase: ${ensure.error || 'error'}`, 'danger');
-        return;
+    match.item.markReceived(via, { operatorName, sessionId: sess.sessionId });
+    persistActiveOrder();
+    UI.vibrateDevice();
+    UI.renderReceptionTable();
+    UI.focusPistolInput();
+
+    const showSuccess = (cloudNote) => {
+      UI.displayScanResult(
+        'success',
+        `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model}) · ${operatorName}${cloudNote}`,
+        match.item
+      );
+    };
+
+    if (!hub.isConnected() || !orderId) {
+      showSuccess(' · solo local (sin Supabase)');
+      return;
+    }
+
+    showSuccess(fastScan ? ' · sincronizando…' : ' · guardando…');
+
+    const cloudSync = async () => {
+      if (order && !order.cloudSynced) {
+        const ensure = await flushOrderToCloudById(orderId, { syncAssets: false });
+        if (!ensure.ok) {
+          UI.revertPendingReceive(match.item);
+          UIFeedback.toast(`Supabase: ${ensure.error || 'error'}`, 'danger');
+          return;
+        }
       }
 
-      let claim = await hub.claimSerialReceived({
+      const claimArgs = {
         labOrderId: orderId,
         serialNormalized: match.item.serial.normalized,
         sessionId: sess.sessionId,
         operatorName,
-        via
-      });
+        via,
+        skipNormalizedAsset: fastScan
+      };
+      let claim = await hub.claimSerialReceived(claimArgs);
       if (!claim.ok && claim.error === 'Orden no encontrada en la nube') {
-        await flushOrderToCloudById(orderId);
-        claim = await hub.claimSerialReceived({
-          labOrderId: orderId,
-          serialNormalized: match.item.serial.normalized,
-          sessionId: sess.sessionId,
-          operatorName,
-          via
-        });
+        await flushOrderToCloudById(orderId, { syncAssets: false });
+        claim = await hub.claimSerialReceived(claimArgs);
       }
       if (!claim.ok) {
         if (claim.reason === 'ALREADY_RECEIVED') {
           await OrderStore.pullFromCloud({ silent: true });
-          UIFeedback.toast(`Ya recibida por ${claim.by || 'otro teléfono'}`, 'warning');
+          UI.revertPendingReceive(match.item);
           UI.displayScanResult('warning', `⚠️ Duplicado en nube: ${match.item.serial.raw} (${claim.by})`);
-          UI.renderReceptionTable();
+          UIFeedback.toast(`Ya recibida por ${claim.by || 'otro teléfono'}`, 'warning');
           return;
         }
+        UI.revertPendingReceive(match.item);
         UIFeedback.toast(claim.error || 'No se pudo registrar en nube', 'danger');
         return;
       }
       if (claim.warn) {
-        UIFeedback.toast(`Recibido en orden; aviso: ${claim.warn}`, 'warning');
+        UIFeedback.toast(`Recibido; aviso: ${claim.warn}`, 'warning');
       }
-    }
-
-    match.item.markReceived(via, { operatorName, sessionId: sess.sessionId });
-    persistActiveOrder();
-
-    if (hub.isConnected() && orderId) {
-      let sync = await flushOrderToCloudById(orderId);
-      if (!sync.ok) sync = await flushOrderToCloudById(orderId);
-      if (!sync.ok) {
-        UIFeedback.toast(`Recibido aquí, pero Supabase falló: ${sync.error}. Pulse ↻ Sincronizar.`, 'warning');
-      } else {
-        UI.setCloudSyncHint('recibido ↑ nube');
-        const idx = OrderStore.orders.findIndex(o => o.id === orderId);
-        if (idx >= 0) {
-          OrderStore.orders[idx].updatedAt = new Date().toISOString();
-          OrderStore.saveAll({ skipCloud: true });
-        }
+      if (fastScan && order) {
+        const itemJ = serializeAssetItem(match.item);
+        void hub.syncSingleReceivedAsset(order, itemJ);
       }
-    }
+      UI.setCloudSyncHint('recibido ↑ nube');
+      showSuccess(' · guardado Supabase');
+      const idx = OrderStore.orders.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        OrderStore.orders[idx].updatedAt = new Date().toISOString();
+        OrderStore.saveAll({ skipCloud: true });
+      }
+    };
 
-    UI.vibrateDevice();
-    const cloudNote = hub.isConnected() ? ' · guardado Supabase' : ' · solo local (sin Supabase)';
-    UI.displayScanResult(
-      'success',
-      `✅ EN LA LISTA: ${match.item.serial.raw} (${match.item.model}) · ${operatorName}${cloudNote}`,
-      match.item
-    );
-    document.getElementById('scanResultArea')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    UI.renderReceptionTable();
-    UIFeedback.toast(`Recibido: ${match.item.serial.raw}`, 'success');
-    UI.focusPistolInput();
+    if (fastScan) {
+      void cloudSync();
+    } else {
+      await cloudSync();
+    }
   },
 
   confirmPendingReceive() {
@@ -5995,8 +6111,10 @@ const UI = {
       UIFeedback.toast('Pegue la anon key (☁) o use CONFIGURAR-SUPABASE.bat', 'warning');
       return;
     }
-    const res = await hub.syncAllLabOrders(OrderStore.orders);
+    const res = await hub.syncAllLabOrders(OrderStore.orders, { syncAssets: true });
     if (res.ok) {
+      for (const o of OrderStore.orders) o.cloudSynced = true;
+      OrderStore.saveAll({ skipCloud: true });
       UI.setCloudSyncHint(`${res.synced} ord · ${res.assets || 0} equipos`);
       UIFeedback.toast(
         `Supabase: ${res.synced} orden(es), ${res.assets || 0} equipos en catálogo`,
