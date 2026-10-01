@@ -4015,6 +4015,7 @@ const UI = {
   pistolSubmitLock: false,
   pistolAutoTimer: null,
   labelOcrBusy: false,
+  pendingReceiveConfirm: null,
 
   init() {
     OrderStore.loadAll();
@@ -5428,16 +5429,13 @@ const UI = {
         if (fuzzyOnly) break;
       }
       if (fuzzyOnly) {
+        UI.pendingReceiveConfirm = { match: fuzzyOnly, via };
         UI.displayScanResult(
           'warning',
           `⚠️ ¿Quiso decir ${fuzzyOnly.item.serial.raw}? (leído: ${fuzzyOnly.readAs || manual})`,
-          fuzzyOnly.item
+          fuzzyOnly.item,
+          { pendingReceive: true }
         );
-        UIFeedback.modal({
-          title: 'Serie similar en la orden',
-          message: `En la orden: ${fuzzyOnly.item.serial.raw}\nLeído: ${fuzzyOnly.readAs || manual}\n\n¿Marcar como recibido?`,
-          onConfirm: () => UI.finalizeReceiveMatch(fuzzyOnly, via)
-        });
         return;
       }
       const hint = /MFGYR|\bST\b|\bEX\b/i.test(scanTokens.join(' ') + expanded.join(' '))
@@ -5467,19 +5465,21 @@ const UI = {
       || /^FUZZY_/i.test(match.matchType);
     const label = `${match.item.serial.raw} (${match.item.model}) — ${match.matchType}`;
     if (confirmNeeded) {
-      UI.displayScanResult('warning', `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`, match.item);
-      UIFeedback.modal({
-        title: 'Confirmar serie',
-        message: `¿Marcar como recibido?\n\nSerie en orden: ${match.item.serial.raw}\nTipo: ${match.matchType}`,
-        onConfirm: () => UI.finalizeReceiveMatch(match, via)
-      });
+      UI.pendingReceiveConfirm = { match, via };
+      UI.displayScanResult(
+        'warning',
+        `⚠️ Coincidencia dudosa: ${label}. Confirme si es el equipo correcto.`,
+        match.item,
+        { pendingReceive: true }
+      );
       return;
     }
     await UI.finalizeReceiveMatch(match, via);
-    if (via === 'pistol_scan') UI.focusPistolInput();
+    UI.focusPistolInput();
   },
 
   async finalizeReceiveMatch(match, via) {
+    UI.pendingReceiveConfirm = null;
     const operatorName = await ensureOperatorName();
     if (!operatorName) return;
 
@@ -5559,6 +5559,29 @@ const UI = {
     document.getElementById('scanResultArea')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     UI.renderReceptionTable();
     UIFeedback.toast(`Recibido: ${match.item.serial.raw}`, 'success');
+    UI.focusPistolInput();
+  },
+
+  confirmPendingReceive() {
+    const pending = UI.pendingReceiveConfirm;
+    UI.pendingReceiveConfirm = null;
+    if (!pending) return;
+    UI.finalizeReceiveMatch(pending.match, pending.via);
+  },
+
+  clearPendingReceive() {
+    UI.pendingReceiveConfirm = null;
+    const area = document.getElementById('scanResultArea');
+    if (area) area.innerHTML = '';
+    UI.focusPistolInput();
+  },
+
+  continueNextSerial() {
+    UI.activePhotoItem = null;
+    UI.pendingReceiveConfirm = null;
+    const area = document.getElementById('scanResultArea');
+    if (area) area.innerHTML = '';
+    UI.focusPistolInput();
   },
 
   async decodeBarcodesFromImage(file) {
@@ -5635,6 +5658,12 @@ const UI = {
 
         persistActiveOrder();
         UI.renderReceptionTable();
+        const who = item.receivedByName || '';
+        UI.displayScanResult(
+          'success',
+          `✅ EN LA LISTA: ${item.serial.raw} (${item.model})${who ? ` · ${who}` : ''} · foto guardada`,
+          item
+        );
         const where = uploadRes.isLocalFallback
           ? 'solo en este navegador (conecte Supabase para nube)'
           : `Supabase · ${uploadRes.storagePath}`;
@@ -5645,21 +5674,34 @@ const UI = {
     };
   },
 
-  displayScanResult(type, message, item = null) {
+  displayScanResult(type, message, item = null, opts = {}) {
     const area = document.getElementById('scanResultArea');
     const badgeClass = type === 'success' ? 'badge-success' : type === 'warning' ? 'badge-warning' : 'badge-danger';
+    const serialKey = item?.serial?.normalized || '';
 
-    let photoSection = '';
-    if (item) {
-      photoSection = `
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <button class="btn btn-secondary btn-small" onclick="UI.triggerCosmeticPhoto('${item.serial.normalized}')">
-            📷 ${item.photoRef ? 'Repetir Foto Estética' : 'Tomar Foto Estética'}
-          </button>
-          <input type="text" placeholder="Nota estética (rayones, golpes, rajadura...)" 
-                 value="${item.cosmeticNote}" 
-                 onchange="UI.updateCosmeticNote('${item.serial.normalized}', this.value)"
-                 style="font-size:12px;flex:1;min-width:180px;">
+    let actionSection = '';
+    if (opts.pendingReceive && item) {
+      actionSection = `
+        <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button type="button" class="btn btn-primary btn-small" onclick="UI.confirmPendingReceive()">✓ Confirmar recepción</button>
+          <button type="button" class="btn btn-secondary btn-small" onclick="UI.clearPendingReceive()">Cancelar</button>
+          <span style="font-size:11px;color:var(--text-muted);">Foto estética después, opcional.</span>
+        </div>
+      `;
+    } else if (item && item.status === 'RECEIVED' && serialKey) {
+      actionSection = `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+          <p style="font-size:11px;color:var(--text-muted);margin:0 0 8px;">Foto y nota estética son <strong>opcionales</strong>.</p>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-small" onclick="UI.continueNextSerial()">Siguiente equipo →</button>
+            <button type="button" class="btn btn-secondary btn-small" onclick="UI.triggerCosmeticPhoto('${serialKey}')">
+              📷 ${item.photoRef ? 'Repetir foto (opc.)' : 'Foto estética (opc.)'}
+            </button>
+            <input type="text" placeholder="Nota estética (opcional)…"
+                   value="${item.cosmeticNote || ''}"
+                   onchange="UI.updateCosmeticNote('${serialKey}', this.value)"
+                   style="font-size:12px;flex:1;min-width:160px;">
+          </div>
         </div>
       `;
     }
@@ -5667,7 +5709,7 @@ const UI = {
     area.innerHTML = `
       <div style="padding:12px;border-radius:8px;background:var(--${type}-bg);border:1px solid var(--${type});">
         <span class="badge ${badgeClass}">${message}</span>
-        ${photoSection}
+        ${actionSection}
       </div>
     `;
   },
